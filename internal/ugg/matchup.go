@@ -121,11 +121,12 @@ func (f *Fetcher) parseMatchups(rawData map[string]json.RawMessage, role string)
 		}
 	}
 
-	// Convert to slice and calculate win rates
+	// Convert to slice and calculate win rates (wins = enemy wins, so invert)
 	result := make([]MatchupData, 0, len(aggregated))
 	for _, m := range aggregated {
 		if m.Games > 0 {
-			m.WinRate = (m.Wins / m.Games) * 100
+			// U.GG stores enemy wins, so our WR = (games - enemyWins) / games
+			m.WinRate = ((m.Games - m.Wins) / m.Games) * 100
 		}
 		result = append(result, *m)
 	}
