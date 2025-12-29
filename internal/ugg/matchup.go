@@ -79,28 +79,28 @@ func (f *Fetcher) parseMatchups(rawData map[string]json.RawMessage, role string)
 			continue
 		}
 
-		roleData, ok := regionMap[roleID]
+		tierData, ok := regionMap["3"]
 		if !ok {
 			continue
 		}
 
-		var tierMap map[string]json.RawMessage
-		if err := json.Unmarshal(roleData, &tierMap); err != nil {
+		var roleMap map[string]json.RawMessage
+		if err := json.Unmarshal(tierData, &roleMap); err != nil {
 			continue
 		}
 
-		tierData, ok := tierMap["3"]
+		roleData, ok := roleMap[roleID]
 		if !ok {
 			continue
 		}
 
-		var tierContent []json.RawMessage
-		if err := json.Unmarshal(tierData, &tierContent); err != nil || len(tierContent) == 0 {
+		var roleContent []json.RawMessage
+		if err := json.Unmarshal(roleData, &roleContent); err != nil || len(roleContent) == 0 {
 			continue
 		}
 
 		var matchups [][]float64
-		if err := json.Unmarshal(tierContent[0], &matchups); err != nil {
+		if err := json.Unmarshal(roleContent[0], &matchups); err != nil {
 			continue
 		}
 
