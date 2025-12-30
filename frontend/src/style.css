@@ -199,6 +199,62 @@ body {
     color: #f44336;
 }
 
+/* Bans Card */
+.bans-card {
+    padding: 8px 0;
+}
+
+.bans-header {
+    font-size: 13px;
+    font-weight: 700;
+    color: #c89b3c;
+    margin-bottom: 4px;
+}
+
+.bans-subheader {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 10px;
+}
+
+.bans-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ban-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    border-radius: 4px;
+    gap: 10px;
+}
+
+.ban-rank {
+    font-size: 12px;
+    font-weight: 700;
+    color: #666;
+    width: 16px;
+}
+
+.ban-name {
+    flex: 1;
+    font-size: 13px;
+    color: #e0e0e0;
+}
+
+.ban-wr {
+    font-size: 13px;
+    font-weight: 600;
+    color: #888;
+}
+
+.ban-wr.losing {
+    color: #f44336;
+}
+
 .build-winrate.even {
     color: #ff9800;
 }

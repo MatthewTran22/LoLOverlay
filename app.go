@@ -21,6 +21,7 @@ type App struct {
 	stopPoll         chan struct{}
 	lastFetchedChamp int
 	lastFetchedEnemy int
+	lastBanFetchKey  string
 }
 
 // NewApp creates a new App application struct
@@ -83,11 +84,15 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 	if !inChampSelect {
 		a.lastFetchedChamp = 0
 		a.lastFetchedEnemy = 0
+		a.lastBanFetchKey = ""
 		runtime.EventsEmit(a.ctx, "champselect:update", map[string]interface{}{
 			"inChampSelect": false,
 		})
 		runtime.EventsEmit(a.ctx, "build:update", map[string]interface{}{
 			"hasBuild": false,
+		})
+		runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
+			"hasBans": false,
 		})
 		runtime.WindowHide(a.ctx)
 		fmt.Println("Exited Champion Select")
@@ -213,7 +218,20 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 		}
 	}
 
-	// Only fetch matchup data after all bans are done
+	// Show recommended bans whenever we have a champion + role
+	fmt.Printf("Ban check: championID=%d, localPosition='%s', lastBanFetchKey='%s'\n", championID, localPosition, a.lastBanFetchKey)
+	if championID > 0 && localPosition != "" {
+		banKey := fmt.Sprintf("%d-%s", championID, localPosition)
+		if banKey != a.lastBanFetchKey {
+			fmt.Printf("Triggering ban fetch for key: %s\n", banKey)
+			a.lastBanFetchKey = banKey
+			go a.fetchAndEmitRecommendedBans(championID, localPosition)
+		} else {
+			fmt.Printf("Skipping ban fetch - same key: %s\n", banKey)
+		}
+	}
+
+	// During ban phase, don't fetch matchup data yet
 	if hasIncompleteBan {
 		return
 	}
@@ -308,6 +326,42 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 		"enemyName":     enemyName,
 		"matchupStatus": matchupStatus,
 		"patch":         a.uggFetcher.GetPatch(),
+	})
+}
+
+// fetchAndEmitRecommendedBans fetches hardest counters and emits as recommended bans
+func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
+	championName := a.champions.GetName(championID)
+	fmt.Printf("Fetching recommended bans for %s (%s)...\n", championName, role)
+
+	bans, err := a.uggFetcher.GetRecommendedBans(championID, role, 5)
+	if err != nil {
+		fmt.Printf("Failed to fetch recommended bans: %v\n", err)
+		return
+	}
+
+	// Convert to frontend format
+	var banList []map[string]interface{}
+	for _, ban := range bans {
+		banList = append(banList, map[string]interface{}{
+			"championID":   ban.EnemyChampionID,
+			"championName": a.champions.GetName(ban.EnemyChampionID),
+			"winRate":      ban.WinRate,
+			"games":        ban.Games,
+		})
+	}
+
+	fmt.Printf("Recommended bans for %s: ", championName)
+	for _, b := range banList {
+		fmt.Printf("%s (%.1f%%) ", b["championName"], b["winRate"])
+	}
+	fmt.Println()
+
+	runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
+		"hasBans":      true,
+		"championName": championName,
+		"role":         role,
+		"bans":         banList,
 	})
 }
 

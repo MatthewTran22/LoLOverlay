@@ -16,6 +16,12 @@ document.querySelector('#app').innerHTML = `
             </div>
         </div>
 
+        <div class="bans-card hidden" id="bans-card">
+            <div class="bans-header">Recommended Bans</div>
+            <div class="bans-subheader" id="bans-subheader"></div>
+            <div class="bans-list" id="bans-list"></div>
+        </div>
+
         <div class="build-card hidden" id="build-card">
             <div class="build-role" id="build-role"></div>
             <div class="build-matchup">
@@ -26,34 +32,17 @@ document.querySelector('#app').innerHTML = `
     </div>
 `;
 
+// DOM elements
 const statusDot = document.getElementById('status-dot');
 const statusMessage = document.getElementById('status-message');
 const statusCard = document.getElementById('status-card');
+const bansCard = document.getElementById('bans-card');
+const bansSubheader = document.getElementById('bans-subheader');
+const bansList = document.getElementById('bans-list');
 const buildCard = document.getElementById('build-card');
 const buildRole = document.getElementById('build-role');
 const buildWinrate = document.getElementById('build-winrate');
 const winrateLabel = document.getElementById('winrate-label');
-
-// Update UI based on connection status
-function updateStatus(status) {
-    statusMessage.textContent = status.message;
-
-    if (status.connected) {
-        statusDot.className = 'status-dot connected';
-    } else {
-        statusDot.className = 'status-dot waiting';
-    }
-}
-
-// Update UI based on champ select status
-function updateChampSelect(data) {
-    if (!data.inChampSelect) {
-        buildCard.classList.add('hidden');
-        statusCard.classList.remove('hidden');
-        return;
-    }
-    // Keep status visible, build card will show when matchup is ready
-}
 
 // Format role name for display
 function formatRole(role) {
@@ -64,10 +53,56 @@ function formatRole(role) {
         'jungle': 'Jungle',
         'top': 'Top'
     };
-    return roleMap[role] || role;
+    return roleMap[role] || role || '';
 }
 
-// Update UI based on build data
+// Update connection status
+function updateStatus(status) {
+    statusMessage.textContent = status.message;
+    statusDot.className = status.connected ? 'status-dot connected' : 'status-dot waiting';
+}
+
+// Update champ select state
+function updateChampSelect(data) {
+    if (!data.inChampSelect) {
+        buildCard.classList.add('hidden');
+        bansCard.classList.add('hidden');
+        statusCard.classList.remove('hidden');
+        return;
+    }
+}
+
+// Update recommended bans
+function updateBans(data) {
+    if (!data || !data.hasBans || !data.bans || data.bans.length === 0) {
+        bansCard.classList.add('hidden');
+        return;
+    }
+
+    // Show bans card
+    bansCard.classList.remove('hidden');
+    statusCard.classList.add('hidden');
+
+    // Update header
+    bansSubheader.textContent = `Counters for ${data.championName} (${formatRole(data.role)})`;
+
+    // Build ban list HTML
+    let html = '';
+    for (let i = 0; i < data.bans.length; i++) {
+        const ban = data.bans[i];
+        const wr = typeof ban.winRate === 'number' ? ban.winRate.toFixed(1) : ban.winRate;
+        html += `
+            <div class="ban-row">
+                <span class="ban-rank">${i + 1}</span>
+                <span class="ban-name">${ban.championName}</span>
+                <span class="ban-wr losing">${wr}%</span>
+            </div>
+        `;
+    }
+    bansList.innerHTML = html;
+}
+
+// Update build/matchup data
 function updateBuild(data) {
     if (!data.hasBuild) {
         buildCard.classList.add('hidden');
@@ -77,36 +112,25 @@ function updateBuild(data) {
     buildCard.classList.remove('hidden');
     statusCard.classList.add('hidden');
 
-    buildRole.textContent = data.role ? formatRole(data.role) : '';
+    buildRole.textContent = formatRole(data.role);
     winrateLabel.textContent = data.winRateLabel || 'Win Rate';
     buildWinrate.textContent = data.winRate;
 
-    // Update matchup status styling
     buildWinrate.classList.remove('winning', 'losing', 'even');
     if (data.matchupStatus) {
         buildWinrate.classList.add(data.matchupStatus);
     }
 }
 
-// Listen for status updates from backend
-EventsOn('lcu:status', (status) => {
-    updateStatus(status);
-});
-
-// Listen for champ select updates
-EventsOn('champselect:update', (data) => {
-    updateChampSelect(data);
-});
-
-// Listen for build updates
-EventsOn('build:update', (data) => {
-    updateBuild(data);
-});
+// Event listeners
+EventsOn('lcu:status', updateStatus);
+EventsOn('champselect:update', updateChampSelect);
+EventsOn('build:update', updateBuild);
+EventsOn('bans:update', updateBans);
 
 // Get initial status
 GetConnectionStatus()
     .then(updateStatus)
-    .catch(err => {
-        console.error('Failed to get connection status:', err);
+    .catch(() => {
         updateStatus({ connected: false, message: 'Waiting for League...' });
     });
