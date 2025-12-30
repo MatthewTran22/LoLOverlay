@@ -535,3 +535,96 @@ body {
     padding: 16px 0;
     text-align: center;
 }
+
+.item-slot-wr {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.item-wr {
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+}
+
+.item-wr.winning {
+    color: #4caf50;
+}
+
+.item-wr.losing {
+    color: #f44336;
+}
+
+.item-wr.even {
+    color: #ff9800;
+}
+
+/* Build Sub-tabs */
+.build-subtabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.build-subtab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 80px;
+}
+
+.build-subtab:hover {
+    border-color: #c89b3c;
+}
+
+.build-subtab.active {
+    background: rgba(200, 155, 60, 0.15);
+    border-color: #c89b3c;
+}
+
+.subtab-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #e0e0e0;
+}
+
+.build-subtab.active .subtab-name {
+    color: #c89b3c;
+}
+
+.subtab-wr {
+    font-size: 14px;
+    font-weight: 700;
+    color: #888;
+}
+
+.subtab-wr.winning {
+    color: #4caf50;
+}
+
+.subtab-wr.losing {
+    color: #f44336;
+}
+
+.subtab-wr.even {
+    color: #ff9800;
+}
+
+.subtab-games {
+    font-size: 10px;
+    color: #666;
+}
+
+.build-content {
+    overflow-y: auto;
+}

@@ -44,18 +44,8 @@ document.querySelector('#app').innerHTML = `
             </div>
 
             <div class="tab-content" id="tab-build">
-                <div class="items-section" id="items-section">
-                    <div class="items-header">Starting Items</div>
-                    <div class="items-grid" id="starting-items"></div>
-                    <div class="items-header">Core Build</div>
-                    <div class="items-grid" id="core-items"></div>
-                    <div class="items-header">4th Item Options</div>
-                    <div class="items-grid" id="fourth-items"></div>
-                    <div class="items-header">5th Item Options</div>
-                    <div class="items-grid" id="fifth-items"></div>
-                    <div class="items-header">6th Item Options</div>
-                    <div class="items-grid" id="sixth-items"></div>
-                </div>
+                <div class="build-subtabs" id="build-subtabs"></div>
+                <div class="build-content" id="build-content"></div>
             </div>
 
             <div class="tab-content" id="tab-teamcomp">
@@ -95,11 +85,8 @@ const buildWinrate = document.getElementById('build-winrate');
 const winrateLabel = document.getElementById('winrate-label');
 const compWaiting = document.getElementById('comp-waiting');
 const compAnalysis = document.getElementById('comp-analysis');
-const startingItemsGrid = document.getElementById('starting-items');
-const coreItemsGrid = document.getElementById('core-items');
-const fourthItemsGrid = document.getElementById('fourth-items');
-const fifthItemsGrid = document.getElementById('fifth-items');
-const sixthItemsGrid = document.getElementById('sixth-items');
+const buildSubtabs = document.getElementById('build-subtabs');
+const buildContent = document.getElementById('build-content');
 const allyArchetype = document.getElementById('ally-archetype');
 const allyTags = document.getElementById('ally-tags');
 const allyDamage = document.getElementById('ally-damage');
@@ -253,35 +240,106 @@ function updateFullComp(data) {
     `;
 }
 
-// Update item build
+// Current builds data for sub-tab switching
+let currentBuildsData = null;
+
+// Update item build with multiple build paths
 function updateItems(data) {
-    if (!data || !data.hasItems) {
-        startingItemsGrid.innerHTML = '<div class="items-empty">Select a champion...</div>';
-        coreItemsGrid.innerHTML = '';
-        fourthItemsGrid.innerHTML = '';
-        fifthItemsGrid.innerHTML = '';
-        sixthItemsGrid.innerHTML = '';
+    if (!data || !data.hasItems || !data.builds || data.builds.length === 0) {
+        buildSubtabs.innerHTML = '';
+        buildContent.innerHTML = '<div class="items-empty">Select a champion...</div>';
+        currentBuildsData = null;
         return;
     }
 
-    // Helper to render item grid
-    const renderItems = (items, grid) => {
+    currentBuildsData = data.builds;
+
+    // Render sub-tabs
+    buildSubtabs.innerHTML = data.builds.map((build, idx) => {
+        const wr = build.winRate ? build.winRate.toFixed(1) : '?';
+        const wrClass = build.winRate >= 51 ? 'winning' : build.winRate <= 49 ? 'losing' : 'even';
+        return `
+            <button class="build-subtab ${idx === 0 ? 'active' : ''}" data-build-idx="${idx}">
+                <span class="subtab-name">${build.name}</span>
+                <span class="subtab-wr ${wrClass}">${wr}%</span>
+                <span class="subtab-games">${build.games} games</span>
+            </button>
+        `;
+    }).join('');
+
+    // Add click handlers for sub-tabs
+    buildSubtabs.querySelectorAll('.build-subtab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            buildSubtabs.querySelectorAll('.build-subtab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderBuildContent(parseInt(btn.dataset.buildIdx));
+        });
+    });
+
+    // Render first build by default
+    renderBuildContent(0);
+}
+
+// Render content for a specific build path
+function renderBuildContent(buildIdx) {
+    if (!currentBuildsData || !currentBuildsData[buildIdx]) {
+        buildContent.innerHTML = '<div class="items-empty">No build data</div>';
+        return;
+    }
+
+    const build = currentBuildsData[buildIdx];
+
+    // Helper to render basic items (no win rate)
+    const renderBasicItems = (items) => {
         if (items && items.length > 0) {
-            grid.innerHTML = items.map(item => `
+            return items.map(item => `
                 <div class="item-slot">
                     <img class="item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
                 </div>
             `).join('');
-        } else {
-            grid.innerHTML = '<div class="items-empty">No data</div>';
         }
+        return '<div class="items-empty">No data</div>';
     };
 
-    renderItems(data.startingItems, startingItemsGrid);
-    renderItems(data.coreItems, coreItemsGrid);
-    renderItems(data.fourthItems, fourthItemsGrid);
-    renderItems(data.fifthItems, fifthItemsGrid);
-    renderItems(data.sixthItems, sixthItemsGrid);
+    // Helper to render items with win rate
+    const renderItemsWithWR = (items) => {
+        if (items && items.length > 0) {
+            return items.map(item => {
+                const wr = item.winRate ? item.winRate.toFixed(1) : '?';
+                const wrClass = item.winRate >= 51 ? 'winning' : item.winRate <= 49 ? 'losing' : 'even';
+                return `
+                    <div class="item-slot-wr">
+                        <img class="item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name} (${item.games} games)" />
+                        <span class="item-wr ${wrClass}">${wr}%</span>
+                    </div>
+                `;
+            }).join('');
+        }
+        return '<div class="items-empty">No data</div>';
+    };
+
+    buildContent.innerHTML = `
+        <div class="items-section">
+            <div class="items-header">Starting Items</div>
+            <div class="items-grid">${renderBasicItems(build.startingItems)}</div>
+        </div>
+        <div class="items-section">
+            <div class="items-header">Core Items</div>
+            <div class="items-grid">${renderBasicItems(build.coreItems)}</div>
+        </div>
+        <div class="items-section">
+            <div class="items-header">4th Item Options</div>
+            <div class="items-grid">${renderItemsWithWR(build.fourthItems)}</div>
+        </div>
+        <div class="items-section">
+            <div class="items-header">5th Item Options</div>
+            <div class="items-grid">${renderItemsWithWR(build.fifthItems)}</div>
+        </div>
+        <div class="items-section">
+            <div class="items-header">6th Item Options</div>
+            <div class="items-grid">${renderItemsWithWR(build.sixthItems)}</div>
+        </div>
+    `;
 }
 
 // Event listeners

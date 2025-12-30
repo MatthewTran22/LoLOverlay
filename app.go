@@ -432,29 +432,10 @@ func (a *App) fetchAndEmitItems(championID int, championName string, role string
 		return
 	}
 
-	// Convert item IDs to names and icons
-	var startingItems []map[string]interface{}
-	for _, itemID := range buildData.StartingItems {
-		startingItems = append(startingItems, map[string]interface{}{
-			"id":      itemID,
-			"name":    a.items.GetName(itemID),
-			"iconURL": a.items.GetIconURL(itemID),
-		})
-	}
-
-	var coreItems []map[string]interface{}
-	for _, itemID := range buildData.CoreItems {
-		coreItems = append(coreItems, map[string]interface{}{
-			"id":      itemID,
-			"name":    a.items.GetName(itemID),
-			"iconURL": a.items.GetIconURL(itemID),
-		})
-	}
-
-	// Convert situational items
-	convertItems := func(ids []int) []map[string]interface{} {
+	// Helper to convert item IDs to frontend format
+	convertItems := func(itemIDs []int) []map[string]interface{} {
 		var result []map[string]interface{}
-		for _, itemID := range ids {
+		for _, itemID := range itemIDs {
 			result = append(result, map[string]interface{}{
 				"id":      itemID,
 				"name":    a.items.GetName(itemID),
@@ -464,19 +445,49 @@ func (a *App) fetchAndEmitItems(championID int, championName string, role string
 		return result
 	}
 
-	fmt.Printf("Items for %s: %d starting, %d core, %d/%d/%d situational\n",
-		championName, len(startingItems), len(coreItems),
-		len(buildData.FourthItemOptions), len(buildData.FifthItemOptions), len(buildData.SixthItemOptions))
+	// Helper to convert item options with win rates
+	convertItemOptions := func(options []ugg.ItemOption) []map[string]interface{} {
+		var result []map[string]interface{}
+		for _, opt := range options {
+			result = append(result, map[string]interface{}{
+				"id":      opt.ItemID,
+				"name":    a.items.GetName(opt.ItemID),
+				"iconURL": a.items.GetIconURL(opt.ItemID),
+				"winRate": opt.WinRate,
+				"games":   opt.Games,
+			})
+		}
+		return result
+	}
+
+	// Convert all build paths
+	var builds []map[string]interface{}
+	for _, build := range buildData.Builds {
+		// Name the build after the first core item
+		buildName := "Build"
+		if len(build.CoreItems) > 0 {
+			buildName = a.items.GetName(build.CoreItems[0])
+		}
+
+		builds = append(builds, map[string]interface{}{
+			"name":          buildName,
+			"winRate":       build.WinRate,
+			"games":         build.Games,
+			"startingItems": convertItems(build.StartingItems),
+			"coreItems":     convertItems(build.CoreItems),
+			"fourthItems":   convertItemOptions(build.FourthItemOptions),
+			"fifthItems":    convertItemOptions(build.FifthItemOptions),
+			"sixthItems":    convertItemOptions(build.SixthItemOptions),
+		})
+	}
+
+	fmt.Printf("Found %d build paths for %s\n", len(builds), championName)
 
 	runtime.EventsEmit(a.ctx, "items:update", map[string]interface{}{
-		"hasItems":      true,
-		"championName":  championName,
-		"role":          role,
-		"startingItems": startingItems,
-		"coreItems":     coreItems,
-		"fourthItems":   convertItems(buildData.FourthItemOptions),
-		"fifthItems":    convertItems(buildData.FifthItemOptions),
-		"sixthItems":    convertItems(buildData.SixthItemOptions),
+		"hasItems":     true,
+		"championName": championName,
+		"role":         role,
+		"builds":       builds,
 	})
 }
 

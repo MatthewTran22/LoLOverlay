@@ -2,3 +2,8 @@ build/bin
 node_modules
 frontend/dist
 .claudelocal
+
+# Environment files with secrets
+.env
+*.env
+data-analyzer/.env
