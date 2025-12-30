@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoL Match Data Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Match Data Analyzer</h1>
+            <div class="stats" id="stats">Loading...</div>
+        </header>
+
+        <section class="card">
+            <h2>Champion Statistics</h2>
+            <table id="champions-table">
+                <thead>
+                    <tr>
+                        <th>Champion</th>
+                        <th>Games</th>
+                        <th>Wins</th>
+                        <th>Win Rate</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Recent Matches</h2>
+            <table id="matches-table">
+                <thead>
+                    <tr>
+                        <th>Match ID</th>
+                        <th>Patch</th>
+                        <th>Duration</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+    </div>
+
+    <script>
+        async function loadData() {
+            // Load stats
+            try {
+                const statsRes = await fetch('/api/stats');
+                const stats = await statsRes.json();
+                document.getElementById('stats').innerHTML = `
+                    <span>${stats.matches} matches</span> |
+                    <span>${stats.participants} participants</span>
+                `;
+            } catch (e) {
+                document.getElementById('stats').textContent = 'Error loading stats';
+            }
+
+            // Load champions
+            try {
+                const champRes = await fetch('/api/champions');
+                const champions = await champRes.json();
+                const tbody = document.querySelector('#champions-table tbody');
+                tbody.innerHTML = '';
+
+                if (champions && champions.length > 0) {
+                    champions.forEach(champ => {
+                        const tr = document.createElement('tr');
+                        const wrClass = champ.winRate >= 52 ? 'win' : champ.winRate <= 48 ? 'loss' : '';
+                        tr.innerHTML = `
+                            <td>${champ.championName}</td>
+                            <td>${champ.totalGames}</td>
+                            <td>${champ.wins}</td>
+                            <td class="${wrClass}">${champ.winRate.toFixed(1)}%</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4">No data yet. Run the collector first.</td></tr>';
+                }
+            } catch (e) {
+                console.error('Error loading champions:', e);
+            }
+
+            // Load matches
+            try {
+                const matchRes = await fetch('/api/matches');
+                const matches = await matchRes.json();
+                const tbody = document.querySelector('#matches-table tbody');
+                tbody.innerHTML = '';
+
+                if (matches && matches.length > 0) {
+                    matches.forEach(match => {
+                        const tr = document.createElement('tr');
+                        tr.style.cursor = 'pointer';
+                        tr.onclick = () => window.location.href = `/match.html?id=${match.matchId}`;
+                        const date = new Date(match.gameCreation);
+                        const duration = `${Math.floor(match.gameDuration / 60)}:${(match.gameDuration % 60).toString().padStart(2, '0')}`;
+                        tr.innerHTML = `
+                            <td><a href="/match.html?id=${match.matchId}" style="color: #c89b3c;">${match.matchId}</a></td>
+                            <td>${match.gameVersion}</td>
+                            <td>${duration}</td>
+                            <td>${date.toLocaleDateString()}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4">No matches yet. Run the collector first.</td></tr>';
+                }
+            } catch (e) {
+                console.error('Error loading matches:', e);
+            }
+        }
+
+        loadData();
+    </script>
+</body>
+</html>

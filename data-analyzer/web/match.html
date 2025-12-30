@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Match Details</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .back-link {
+            display: inline-block;
+            color: #c89b3c;
+            text-decoration: none;
+            margin-bottom: 20px;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .match-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .match-info {
+            color: #888;
+        }
+        .team {
+            margin-bottom: 30px;
+        }
+        .team-header {
+            font-size: 1.1rem;
+            font-weight: 600;
+            padding: 10px;
+            border-radius: 4px 4px 0 0;
+        }
+        .team-header.winners {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4caf50;
+        }
+        .team-header.losers {
+            background: rgba(244, 67, 54, 0.2);
+            color: #f44336;
+        }
+        .participant {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            border-bottom: 1px solid #333;
+            gap: 15px;
+        }
+        .participant:last-child {
+            border-bottom: none;
+        }
+        .champ-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: #333;
+        }
+        .champ-info {
+            flex: 1;
+        }
+        .champ-name {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        .player-name {
+            color: #c89b3c;
+            font-size: 0.9rem;
+            margin-top: 2px;
+        }
+        .champ-role {
+            color: #888;
+            font-size: 0.85rem;
+        }
+        .items {
+            display: flex;
+            gap: 4px;
+        }
+        .item {
+            width: 32px;
+            height: 32px;
+            background: #1a1a2e;
+            border-radius: 4px;
+            border: 1px solid #333;
+        }
+        .build-order {
+            margin-top: 20px;
+        }
+        .build-order h4 {
+            color: #888;
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+        }
+        .build-items {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .build-items .item {
+            width: 36px;
+            height: 36px;
+        }
+        .build-arrow {
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">&larr; Back to Dashboard</a>
+
+        <div class="card">
+            <div class="match-header">
+                <h2 id="match-title">Loading...</h2>
+                <div class="match-info" id="match-info"></div>
+            </div>
+
+            <div id="teams"></div>
+        </div>
+    </div>
+
+    <script>
+        const DDRAGON_VERSION = '14.24.1';
+
+        function getChampionIcon(championName) {
+            return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${championName}.png`;
+        }
+
+        function getItemIcon(itemId) {
+            if (!itemId || itemId === 0) return null;
+            return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/item/${itemId}.png`;
+        }
+
+        function formatDuration(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function formatDate(timestamp) {
+            return new Date(timestamp).toLocaleString();
+        }
+
+        function renderItems(items) {
+            return items.map(id => {
+                const url = getItemIcon(id);
+                if (url) {
+                    return `<img class="item" src="${url}" alt="Item ${id}" title="Item ${id}">`;
+                }
+                return `<div class="item"></div>`;
+            }).join('');
+        }
+
+        function renderBuildOrder(buildOrder) {
+            if (!buildOrder || buildOrder.length === 0) return '';
+
+            const items = buildOrder.map(id => {
+                const url = getItemIcon(id);
+                return url ? `<img class="item" src="${url}" alt="Item ${id}">` : '';
+            }).filter(Boolean);
+
+            return `
+                <div class="build-order">
+                    <h4>Build Order</h4>
+                    <div class="build-items">
+                        ${items.join('<span class="build-arrow">→</span>')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderParticipant(p) {
+            const playerName = p.gameName && p.tagLine
+                ? `${p.gameName}#${p.tagLine}`
+                : (p.gameName || 'Unknown');
+            return `
+                <div class="participant">
+                    <img class="champ-icon" src="${getChampionIcon(p.championName)}" alt="${p.championName}">
+                    <div class="champ-info">
+                        <div class="champ-name">${p.championName}</div>
+                        <div class="player-name">${playerName}</div>
+                        <div class="champ-role">${p.teamPosition || 'Unknown'}</div>
+                    </div>
+                    <div class="items">
+                        ${renderItems(p.items)}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadMatch() {
+            const params = new URLSearchParams(window.location.search);
+            const matchId = params.get('id');
+
+            if (!matchId) {
+                document.getElementById('match-title').textContent = 'No match ID provided';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/match/${matchId}`);
+                if (!res.ok) throw new Error('Match not found');
+
+                const match = await res.json();
+
+                document.getElementById('match-title').textContent = `Match ${match.matchId}`;
+                document.getElementById('match-info').innerHTML = `
+                    Patch ${match.gameVersion} |
+                    ${formatDuration(match.gameDuration)} |
+                    ${formatDate(match.gameCreation)}
+                `;
+
+                // Split into winners and losers
+                const winners = match.participants.filter(p => p.win);
+                const losers = match.participants.filter(p => !p.win);
+
+                const teamsHtml = `
+                    <div class="team">
+                        <div class="team-header winners">Victory</div>
+                        ${winners.map(renderParticipant).join('')}
+                    </div>
+                    <div class="team">
+                        <div class="team-header losers">Defeat</div>
+                        ${losers.map(renderParticipant).join('')}
+                    </div>
+                `;
+
+                document.getElementById('teams').innerHTML = teamsHtml;
+
+            } catch (e) {
+                document.getElementById('match-title').textContent = 'Error loading match';
+                console.error(e);
+            }
+        }
+
+        loadMatch();
+    </script>
+</body>
+</html>
