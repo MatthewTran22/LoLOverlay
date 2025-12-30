@@ -151,25 +151,17 @@ func (f *Fetcher) GetMatchupWinRate(championID int, role string, enemyChampionID
 }
 
 // GetRecommendedBans returns the hardest counters (lowest win rate matchups) for a champion
-// Only includes champions whose primary role matches the specified role
 func (f *Fetcher) GetRecommendedBans(championID int, role string, count int) ([]MatchupData, error) {
 	matchups, err := f.FetchMatchups(championID, role)
 	if err != nil {
 		return nil, err
 	}
 
-	// Filter to matchups with enough games (100+) and same-role champions
+	// Filter to matchups with enough games (500+) to ensure it's a common matchup
 	var reliable []MatchupData
 	for _, m := range matchups {
-		if m.Games >= 100 {
-			// Check if this enemy's primary role matches our lane
-			enemyRole, err := f.GetChampionPrimaryRole(m.EnemyChampionID)
-			if err != nil {
-				continue
-			}
-			if enemyRole == role {
-				reliable = append(reliable, m)
-			}
+		if m.Games >= 500 {
+			reliable = append(reliable, m)
 		}
 	}
 
