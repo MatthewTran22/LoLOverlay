@@ -16,6 +16,10 @@ document.querySelector('#app').innerHTML = `
             </div>
         </div>
 
+        <div class="teamcomp-card hidden" id="teamcomp-card">
+            <div class="teamcomp-warning" id="teamcomp-warning"></div>
+        </div>
+
         <div class="bans-card hidden" id="bans-card">
             <div class="bans-header">Recommended Bans</div>
             <div class="bans-subheader" id="bans-subheader"></div>
@@ -36,6 +40,8 @@ document.querySelector('#app').innerHTML = `
 const statusDot = document.getElementById('status-dot');
 const statusMessage = document.getElementById('status-message');
 const statusCard = document.getElementById('status-card');
+const teamcompCard = document.getElementById('teamcomp-card');
+const teamcompWarning = document.getElementById('teamcomp-warning');
 const bansCard = document.getElementById('bans-card');
 const bansSubheader = document.getElementById('bans-subheader');
 const bansList = document.getElementById('bans-list');
@@ -67,9 +73,22 @@ function updateChampSelect(data) {
     if (!data.inChampSelect) {
         buildCard.classList.add('hidden');
         bansCard.classList.add('hidden');
+        teamcompCard.classList.add('hidden');
         statusCard.classList.remove('hidden');
         return;
     }
+}
+
+// Update team comp warning
+function updateTeamComp(data) {
+    if (!data || !data.show) {
+        teamcompCard.classList.add('hidden');
+        return;
+    }
+
+    teamcompCard.classList.remove('hidden');
+    teamcompCard.className = `teamcomp-card ${data.severity}`;
+    teamcompWarning.textContent = data.recommendation;
 }
 
 // Update recommended bans
@@ -91,11 +110,13 @@ function updateBans(data) {
     for (let i = 0; i < data.bans.length; i++) {
         const ban = data.bans[i];
         const wr = typeof ban.winRate === 'number' ? ban.winRate.toFixed(1) : ban.winRate;
+        const dmgClass = ban.damageType === 'AP' ? 'ap' : ban.damageType === 'AD' ? 'ad' : 'mixed';
         html += `
             <div class="ban-row">
                 <span class="ban-rank">${i + 1}</span>
                 <img class="ban-icon" src="${ban.iconURL}" alt="${ban.championName}" />
                 <span class="ban-name">${ban.championName}</span>
+                <span class="ban-dmg ${dmgClass}">${ban.damageType}</span>
                 <span class="ban-wr losing">${wr}%</span>
             </div>
         `;
@@ -128,6 +149,7 @@ EventsOn('lcu:status', updateStatus);
 EventsOn('champselect:update', updateChampSelect);
 EventsOn('build:update', updateBuild);
 EventsOn('bans:update', updateBans);
+EventsOn('teamcomp:update', updateTeamComp);
 
 // Get initial status
 GetConnectionStatus()

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"ghostdraft/internal/data"
 	"ghostdraft/internal/lcu"
 	"ghostdraft/internal/ugg"
 
@@ -17,6 +19,7 @@ type App struct {
 	lcuClient        *lcu.Client
 	wsClient         *lcu.WebSocketClient
 	champions        *lcu.ChampionRegistry
+	championDB       *data.ChampionDB
 	uggFetcher       *ugg.Fetcher
 	stopPoll         chan struct{}
 	lastFetchedChamp int
@@ -38,6 +41,14 @@ func NewApp() *App {
 // startup is called when the app starts
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Initialize champion database
+	if db, err := data.NewChampionDB(); err != nil {
+		fmt.Printf("Failed to initialize champion DB: %v\n", err)
+	} else {
+		a.championDB = db
+		fmt.Println("Champion database initialized")
+	}
 
 	// Position and size window relative to screen
 	screens, err := runtime.ScreenGetAll(ctx)
@@ -77,6 +88,9 @@ func (a *App) shutdown(ctx context.Context) {
 	close(a.stopPoll)
 	a.wsClient.Disconnect()
 	a.lcuClient.Disconnect()
+	if a.championDB != nil {
+		a.championDB.Close()
+	}
 }
 
 // onChampSelectUpdate handles champ select state changes
@@ -227,6 +241,9 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 		}
 	}
 
+	// Analyze team composition for damage balance
+	a.analyzeTeamComp(session, localChampionID)
+
 	// During ban phase, don't fetch matchup data yet
 	if hasIncompleteBan {
 		return
@@ -339,10 +356,16 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 	// Convert to frontend format
 	var banList []map[string]interface{}
 	for _, ban := range bans {
+		enemyName := a.champions.GetName(ban.EnemyChampionID)
+		damageType := "Unknown"
+		if a.championDB != nil {
+			damageType = a.championDB.GetDamageType(enemyName)
+		}
 		banList = append(banList, map[string]interface{}{
 			"championID":   ban.EnemyChampionID,
-			"championName": a.champions.GetName(ban.EnemyChampionID),
+			"championName": enemyName,
 			"iconURL":      a.champions.GetIconURL(ban.EnemyChampionID),
+			"damageType":   damageType,
 			"winRate":      ban.WinRate,
 			"games":        ban.Games,
 		})
@@ -360,6 +383,122 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 		"role":         role,
 		"bans":         banList,
 	})
+}
+
+// analyzeTeamComp checks team damage balance and emits recommendation
+func (a *App) analyzeTeamComp(session *lcu.ChampSelectSession, localChampID int) {
+	if a.championDB == nil {
+		fmt.Println("Team comp: championDB is nil!")
+		return
+	}
+	fmt.Println("Analyzing team comp...")
+
+	var apCount, adCount, mixedCount int
+	localHasLocked := false
+
+	for _, player := range session.MyTeam {
+		// Skip players without a champion
+		if player.ChampionID == 0 {
+			continue
+		}
+
+		// Skip local player - we want to advise them, not count their hover
+		if player.CellID == session.LocalPlayerCellID {
+			// Check if local player has locked
+			for _, actionGroup := range session.Actions {
+				for _, action := range actionGroup {
+					if action.ActorCellID == player.CellID && action.Type == "pick" && action.Completed {
+						localHasLocked = true
+						break
+					}
+				}
+				if localHasLocked {
+					break
+				}
+			}
+			continue
+		}
+
+		// Count teammate's champion damage type
+		champName := a.champions.GetName(player.ChampionID)
+		dmgType := a.championDB.GetDamageType(champName)
+
+		fmt.Printf("  Teammate %s: %s\n", champName, dmgType)
+
+		switch dmgType {
+		case "AP":
+			apCount++
+		case "AD":
+			adCount++
+		default:
+			// Mixed types like AD/AP, AP/Tank count as 0.5 each
+			if strings.Contains(dmgType, "AP") {
+				apCount++
+			}
+			if strings.Contains(dmgType, "AD") {
+				adCount++
+			}
+			if dmgType == "Tank" {
+				mixedCount++
+			}
+		}
+	}
+
+	totalDmgChamps := apCount + adCount
+	fmt.Printf("Team comp analysis: AP=%d, AD=%d, Mixed=%d, LocalLocked=%v\n", apCount, adCount, mixedCount, localHasLocked)
+
+	// Don't show recommendation if local player already locked
+	if localHasLocked {
+		runtime.EventsEmit(a.ctx, "teamcomp:update", map[string]interface{}{
+			"show": false,
+		})
+		return
+	}
+
+	// Need at least 1 teammate to assess balance
+	if totalDmgChamps < 1 {
+		runtime.EventsEmit(a.ctx, "teamcomp:update", map[string]interface{}{
+			"show": false,
+		})
+		return
+	}
+
+	var recommendation string
+	var severity string // "warning" or "critical"
+
+	apRatio := float64(apCount) / float64(totalDmgChamps)
+	adRatio := float64(adCount) / float64(totalDmgChamps)
+
+	if apRatio >= 0.75 {
+		recommendation = "Team is AP heavy - consider picking AD"
+		if apRatio >= 0.9 {
+			severity = "critical"
+		} else {
+			severity = "warning"
+		}
+	} else if adRatio >= 0.75 {
+		recommendation = "Team is AD heavy - consider picking AP"
+		if adRatio >= 0.9 {
+			severity = "critical"
+		} else {
+			severity = "warning"
+		}
+	}
+
+	if recommendation != "" {
+		fmt.Printf("Team comp: AP=%d, AD=%d, Mixed=%d - %s\n", apCount, adCount, mixedCount, recommendation)
+		runtime.EventsEmit(a.ctx, "teamcomp:update", map[string]interface{}{
+			"show":           true,
+			"recommendation": recommendation,
+			"severity":       severity,
+			"apCount":        apCount,
+			"adCount":        adCount,
+		})
+	} else {
+		runtime.EventsEmit(a.ctx, "teamcomp:update", map[string]interface{}{
+			"show": false,
+		})
+	}
 }
 
 // pollForLeagueClient continuously checks for League Client

@@ -200,6 +200,37 @@ body {
 }
 
 /* Bans Card */
+/* Team Comp Warning */
+.teamcomp-card {
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.teamcomp-card.warning {
+    background: rgba(255, 152, 0, 0.2);
+    border: 1px solid rgba(255, 152, 0, 0.5);
+}
+
+.teamcomp-card.critical {
+    background: rgba(244, 67, 54, 0.2);
+    border: 1px solid rgba(244, 67, 54, 0.5);
+}
+
+.teamcomp-warning {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.teamcomp-card.warning .teamcomp-warning {
+    color: #ffb74d;
+}
+
+.teamcomp-card.critical .teamcomp-warning {
+    color: #ef5350;
+}
+
 .bans-card {
     padding: 8px 0;
 }
@@ -250,6 +281,29 @@ body {
     flex: 1;
     font-size: 15px;
     color: #e0e0e0;
+}
+
+.ban-dmg {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.ban-dmg.ap {
+    background: rgba(138, 43, 226, 0.3);
+    color: #bb86fc;
+}
+
+.ban-dmg.ad {
+    background: rgba(255, 87, 34, 0.3);
+    color: #ff8a65;
+}
+
+.ban-dmg.mixed {
+    background: rgba(255, 193, 7, 0.3);
+    color: #ffd54f;
 }
 
 .ban-wr {
