@@ -94,13 +94,9 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 		runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
 			"hasBans": false,
 		})
-		runtime.WindowHide(a.ctx)
 		fmt.Println("Exited Champion Select")
 		return
 	}
-
-	// Show window when entering champ select
-	runtime.WindowShow(a.ctx)
 
 	// Find local player's champion and position
 	var localChampionID int
@@ -346,6 +342,7 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 		banList = append(banList, map[string]interface{}{
 			"championID":   ban.EnemyChampionID,
 			"championName": a.champions.GetName(ban.EnemyChampionID),
+			"iconURL":      a.champions.GetIconURL(ban.EnemyChampionID),
 			"winRate":      ban.WinRate,
 			"games":        ban.Games,
 		})

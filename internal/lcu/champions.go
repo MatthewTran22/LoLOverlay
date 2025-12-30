@@ -16,9 +16,16 @@ type ChampionData struct {
 	Name string `json:"name"`
 }
 
+// ChampionInfo holds champion name and icon ID
+type ChampionInfo struct {
+	Name   string // Display name (e.g., "Ahri")
+	IconID string // Icon ID for Data Dragon (e.g., "Ahri")
+}
+
 // ChampionRegistry holds the champion ID to name mapping
 type ChampionRegistry struct {
-	champions map[int]string // key -> name (key is the numeric ID)
+	champions map[int]ChampionInfo // key -> info (key is the numeric ID)
+	version   string
 	mu        sync.RWMutex
 	loaded    bool
 }
@@ -26,7 +33,7 @@ type ChampionRegistry struct {
 // NewChampionRegistry creates a new champion registry
 func NewChampionRegistry() *ChampionRegistry {
 	return &ChampionRegistry{
-		champions: make(map[int]string),
+		champions: make(map[int]ChampionInfo),
 	}
 }
 
@@ -70,15 +77,19 @@ func (r *ChampionRegistry) Load() error {
 		return fmt.Errorf("failed to parse champions: %w", err)
 	}
 
-	// Build ID -> Name map
-	for _, champ := range champData.Data {
+	// Build ID -> ChampionInfo map
+	for id, champ := range champData.Data {
 		key, err := strconv.Atoi(champ.Key)
 		if err != nil {
 			continue
 		}
-		r.champions[key] = champ.Name
+		r.champions[key] = ChampionInfo{
+			Name:   champ.Name,
+			IconID: id, // The map key is the icon ID (e.g., "Ahri", "MonkeyKing")
+		}
 	}
 
+	r.version = latestVersion
 	r.loaded = true
 	fmt.Printf("Loaded %d champions from Data Dragon (v%s)\n", len(r.champions), latestVersion)
 	return nil
@@ -89,10 +100,21 @@ func (r *ChampionRegistry) GetName(id int) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if name, ok := r.champions[id]; ok {
-		return name
+	if info, ok := r.champions[id]; ok {
+		return info.Name
 	}
 	return fmt.Sprintf("Champion %d", id)
+}
+
+// GetIconURL returns the Data Dragon icon URL for a given champion ID
+func (r *ChampionRegistry) GetIconURL(id int) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if info, ok := r.champions[id]; ok {
+		return fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/champion/%s.png", r.version, info.IconID)
+	}
+	return ""
 }
 
 // IsLoaded returns whether the registry has been loaded

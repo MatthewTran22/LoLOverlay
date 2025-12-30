@@ -21,7 +21,7 @@ func main() {
 		Title:         "GhostDraft",
 		Width:         280,
 		Height:        120,
-		StartHidden:   true,
+		StartHidden:   false,
 		Frameless:     true,
 		AlwaysOnTop:   true,
 		DisableResize: false,

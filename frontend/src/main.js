@@ -94,6 +94,7 @@ function updateBans(data) {
         html += `
             <div class="ban-row">
                 <span class="ban-rank">${i + 1}</span>
+                <img class="ban-icon" src="${ban.iconURL}" alt="${ban.championName}" />
                 <span class="ban-name">${ban.championName}</span>
                 <span class="ban-wr losing">${wr}%</span>
             </div>

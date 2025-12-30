@@ -56,7 +56,7 @@ body {
 }
 
 .header h1 {
-    font-size: 13px;
+    font-size: 18px;
     font-weight: 600;
     color: #c89b3c;
     margin: 0;
@@ -70,8 +70,8 @@ body {
 .status-indicator {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-size: 11px;
+    gap: 8px;
+    font-size: 14px;
 }
 
 .status-dot {
@@ -165,11 +165,11 @@ body {
 }
 
 .build-role {
-    font-size: 11px;
+    font-size: 14px;
     color: #c89b3c;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
     font-weight: 600;
 }
 
@@ -181,12 +181,12 @@ body {
 }
 
 .winrate-label {
-    font-size: 13px;
+    font-size: 16px;
     color: #aaa;
 }
 
 .build-winrate {
-    font-size: 22px;
+    font-size: 28px;
     font-weight: 700;
     color: #888;
 }
@@ -205,16 +205,16 @@ body {
 }
 
 .bans-header {
-    font-size: 13px;
+    font-size: 16px;
     font-weight: 700;
     color: #c89b3c;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 
 .bans-subheader {
-    font-size: 11px;
+    font-size: 13px;
     color: #888;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
 }
 
 .bans-list {
@@ -226,27 +226,34 @@ body {
 .ban-row {
     display: flex;
     align-items: center;
-    padding: 8px 10px;
+    padding: 10px 12px;
     background: #1a1a1a;
     border-radius: 4px;
-    gap: 10px;
+    gap: 12px;
 }
 
 .ban-rank {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: #666;
-    width: 16px;
+    width: 18px;
+}
+
+.ban-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 4px;
+    border: 1px solid #333;
 }
 
 .ban-name {
     flex: 1;
-    font-size: 13px;
+    font-size: 15px;
     color: #e0e0e0;
 }
 
 .ban-wr {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     color: #888;
 }
