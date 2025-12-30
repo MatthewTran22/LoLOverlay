@@ -244,6 +244,9 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 	// Analyze team composition for damage balance
 	a.analyzeTeamComp(session, localChampionID)
 
+	// Analyze full team comps when all locked
+	a.analyzeFullComp(session)
+
 	// During ban phase, don't fetch matchup data yet
 	if hasIncompleteBan {
 		return
@@ -348,8 +351,15 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 	fmt.Printf("Fetching recommended bans for %s (%s)...\n", championName, role)
 
 	bans, err := a.uggFetcher.GetRecommendedBans(championID, role, 5)
-	if err != nil {
-		fmt.Printf("Failed to fetch recommended bans: %v\n", err)
+	if err != nil || len(bans) == 0 {
+		fmt.Printf("No matchup data for %s %s\n", championName, role)
+		runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
+			"hasBans":      true,
+			"championName": championName,
+			"role":         role,
+			"bans":         []map[string]interface{}{},
+			"noData":       true,
+		})
 		return
 	}
 
@@ -499,6 +509,203 @@ func (a *App) analyzeTeamComp(session *lcu.ChampSelectSession, localChampID int)
 			"show": false,
 		})
 	}
+}
+
+// TeamCompData holds analyzed team composition data
+type TeamCompData struct {
+	Tags       map[string]int
+	AP         int
+	AD         int
+	Archetype  string
+	HasTank    bool
+	HasPick    bool // Single-target CC (hooks, roots)
+}
+
+// analyzeFullComp analyzes both teams when all players have locked in
+func (a *App) analyzeFullComp(session *lcu.ChampSelectSession) {
+	if a.championDB == nil {
+		return
+	}
+
+	// Check if all players have locked in
+	allLocked := true
+	for _, player := range session.MyTeam {
+		if player.ChampionID == 0 {
+			allLocked = false
+			break
+		}
+	}
+	for _, player := range session.TheirTeam {
+		if player.ChampionID == 0 {
+			allLocked = false
+			break
+		}
+	}
+
+	if !allLocked {
+		runtime.EventsEmit(a.ctx, "fullcomp:update", map[string]interface{}{
+			"ready": false,
+		})
+		return
+	}
+
+	// Analyze both teams
+	allyComp := a.analyzeTeamTags(session.MyTeam)
+	enemyComp := a.analyzeTeamTags(session.TheirTeam)
+
+	// Calculate damage percentages
+	allyTotal := allyComp.AP + allyComp.AD
+	enemyTotal := enemyComp.AP + enemyComp.AD
+	allyAPPct, allyADPct := 50, 50
+	enemyAPPct, enemyADPct := 50, 50
+
+	if allyTotal > 0 {
+		allyAPPct = allyComp.AP * 100 / allyTotal
+		allyADPct = 100 - allyAPPct
+	}
+	if enemyTotal > 0 {
+		enemyAPPct = enemyComp.AP * 100 / enemyTotal
+		enemyADPct = 100 - enemyAPPct
+	}
+
+	fmt.Printf("Full comp: Ally=%s (AP=%d%% AD=%d%%), Enemy=%s (AP=%d%% AD=%d%%)\n",
+		allyComp.Archetype, allyAPPct, allyADPct, enemyComp.Archetype, enemyAPPct, enemyADPct)
+
+	runtime.EventsEmit(a.ctx, "fullcomp:update", map[string]interface{}{
+		"ready":         true,
+		"allyArchetype": allyComp.Archetype,
+		"allyTags":      formatTagCounts(allyComp.Tags),
+		"allyAP":        allyAPPct,
+		"allyAD":        allyADPct,
+		"enemyArchetype": enemyComp.Archetype,
+		"enemyTags":      formatTagCounts(enemyComp.Tags),
+		"enemyAP":        enemyAPPct,
+		"enemyAD":        enemyADPct,
+	})
+}
+
+// analyzeTeamTags analyzes a team's composition
+func (a *App) analyzeTeamTags(team []lcu.ChampSelectPlayer) TeamCompData {
+	comp := TeamCompData{
+		Tags: make(map[string]int),
+	}
+
+	for _, player := range team {
+		if player.ChampionID == 0 {
+			continue
+		}
+
+		champName := a.champions.GetName(player.ChampionID)
+		info, _ := a.championDB.GetChampion(champName)
+		if info == nil {
+			continue
+		}
+
+		// Count damage type
+		if strings.Contains(info.DamageType, "AP") {
+			comp.AP++
+		}
+		if strings.Contains(info.DamageType, "AD") {
+			comp.AD++
+		}
+		if info.DamageType == "Tank" {
+			comp.HasTank = true
+		}
+
+		// Count role tags
+		tags := info.RoleTags
+		for _, tag := range strings.Split(tags, ", ") {
+			tag = strings.TrimSpace(tag)
+			// Normalize tags - extract base tag
+			baseTag := tag
+			if strings.Contains(tag, "(") {
+				baseTag = strings.TrimSpace(tag[:strings.Index(tag, "(")])
+			}
+			if baseTag != "" {
+				comp.Tags[baseTag]++
+			}
+
+			// Check for pick potential (single-target CC)
+			if strings.Contains(tag, "Pick") {
+				comp.HasPick = true
+			}
+			if baseTag == "Tank" {
+				comp.HasTank = true
+			}
+		}
+	}
+
+	// Determine archetype
+	comp.Archetype = determineArchetype(comp)
+
+	return comp
+}
+
+// determineArchetype determines the team's primary archetype
+func determineArchetype(comp TeamCompData) string {
+	engageCount := comp.Tags["Engage"]
+	pokeCount := comp.Tags["Poke"]
+	burstCount := comp.Tags["Burst"]
+	tankCount := comp.Tags["Tank"]
+	bruiserCount := comp.Tags["Bruiser"]
+	disengageCount := comp.Tags["Disengage"]
+
+	// Hard Engage: 3+ Engage, usually has Tank/Bruiser
+	if engageCount >= 3 && (comp.HasTank || bruiserCount >= 1) {
+		return "Hard Engage"
+	}
+
+	// Poke/Siege: 3+ Poke, lacks hard engage or has disengage
+	if pokeCount >= 3 && (engageCount < 2 || disengageCount >= 1) {
+		return "Poke/Siege"
+	}
+
+	// Pick Comp: 3+ Burst with single-target CC
+	if burstCount >= 3 && comp.HasPick {
+		return "Pick Comp"
+	}
+
+	// Teamfight: Good balance of engage + burst
+	if engageCount >= 2 && burstCount >= 2 {
+		return "Teamfight"
+	}
+
+	// Skirmish/Split: Bruiser heavy, less teamfight
+	if bruiserCount >= 3 {
+		return "Skirmish"
+	}
+
+	// Tank heavy
+	if tankCount >= 2 {
+		return "Front-to-Back"
+	}
+
+	// Default based on highest count
+	if pokeCount >= 2 {
+		return "Poke"
+	}
+	if engageCount >= 2 {
+		return "Engage"
+	}
+	if burstCount >= 2 {
+		return "Burst"
+	}
+
+	return "Mixed"
+}
+
+// formatTagCounts formats tags for display
+func formatTagCounts(tags map[string]int) []string {
+	var result []string
+	// Priority order for display
+	priority := []string{"Engage", "Burst", "Poke", "Tank", "Bruiser", "Disengage"}
+
+	for _, tag := range priority {
+		if count, ok := tags[tag]; ok && count >= 2 {
+			result = append(result, fmt.Sprintf("%s (%d)", tag, count))
+		}
+	}
+	return result
 }
 
 // pollForLeagueClient continuously checks for League Client

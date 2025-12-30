@@ -16,21 +16,48 @@ document.querySelector('#app').innerHTML = `
             </div>
         </div>
 
-        <div class="teamcomp-card hidden" id="teamcomp-card">
-            <div class="teamcomp-warning" id="teamcomp-warning"></div>
-        </div>
+        <div class="tabs-container hidden" id="tabs-container">
+            <div class="tabs-header">
+                <button class="tab-btn active" data-tab="matchup">Matchup</button>
+                <button class="tab-btn" data-tab="teamcomp">Team Comp</button>
+            </div>
 
-        <div class="bans-card hidden" id="bans-card">
-            <div class="bans-header">Recommended Bans</div>
-            <div class="bans-subheader" id="bans-subheader"></div>
-            <div class="bans-list" id="bans-list"></div>
-        </div>
+            <div class="tab-content active" id="tab-matchup">
+                <div class="teamcomp-card hidden" id="teamcomp-card">
+                    <div class="teamcomp-warning" id="teamcomp-warning"></div>
+                </div>
 
-        <div class="build-card hidden" id="build-card">
-            <div class="build-role" id="build-role"></div>
-            <div class="build-matchup">
-                <span class="winrate-label" id="winrate-label">Win Rate</span>
-                <span class="build-winrate" id="build-winrate"></span>
+                <div class="bans-card" id="bans-card">
+                    <div class="bans-header">Recommended Bans</div>
+                    <div class="bans-subheader" id="bans-subheader"></div>
+                    <div class="bans-list" id="bans-list"></div>
+                </div>
+
+                <div class="build-card hidden" id="build-card">
+                    <div class="build-role" id="build-role"></div>
+                    <div class="build-matchup">
+                        <span class="winrate-label" id="winrate-label">Win Rate</span>
+                        <span class="build-winrate" id="build-winrate"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-teamcomp">
+                <div class="comp-waiting" id="comp-waiting">Waiting for all players to lock in...</div>
+                <div class="comp-analysis hidden" id="comp-analysis">
+                    <div class="comp-section">
+                        <div class="comp-section-header ally">Your Team</div>
+                        <div class="comp-archetype" id="ally-archetype"></div>
+                        <div class="comp-tags" id="ally-tags"></div>
+                        <div class="comp-damage" id="ally-damage"></div>
+                    </div>
+                    <div class="comp-section">
+                        <div class="comp-section-header enemy">Enemy Team</div>
+                        <div class="comp-archetype" id="enemy-archetype"></div>
+                        <div class="comp-tags" id="enemy-tags"></div>
+                        <div class="comp-damage" id="enemy-damage"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -40,6 +67,7 @@ document.querySelector('#app').innerHTML = `
 const statusDot = document.getElementById('status-dot');
 const statusMessage = document.getElementById('status-message');
 const statusCard = document.getElementById('status-card');
+const tabsContainer = document.getElementById('tabs-container');
 const teamcompCard = document.getElementById('teamcomp-card');
 const teamcompWarning = document.getElementById('teamcomp-warning');
 const bansCard = document.getElementById('bans-card');
@@ -49,6 +77,26 @@ const buildCard = document.getElementById('build-card');
 const buildRole = document.getElementById('build-role');
 const buildWinrate = document.getElementById('build-winrate');
 const winrateLabel = document.getElementById('winrate-label');
+const compWaiting = document.getElementById('comp-waiting');
+const compAnalysis = document.getElementById('comp-analysis');
+const allyArchetype = document.getElementById('ally-archetype');
+const allyTags = document.getElementById('ally-tags');
+const allyDamage = document.getElementById('ally-damage');
+const enemyArchetype = document.getElementById('enemy-archetype');
+const enemyTags = document.getElementById('enemy-tags');
+const enemyDamage = document.getElementById('enemy-damage');
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        // Update active button
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // Update active content
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+    });
+});
 
 // Format role name for display
 function formatRole(role) {
@@ -71,12 +119,13 @@ function updateStatus(status) {
 // Update champ select state
 function updateChampSelect(data) {
     if (!data.inChampSelect) {
-        buildCard.classList.add('hidden');
-        bansCard.classList.add('hidden');
-        teamcompCard.classList.add('hidden');
+        tabsContainer.classList.add('hidden');
         statusCard.classList.remove('hidden');
         return;
     }
+    // In champ select - show tabs
+    statusCard.classList.add('hidden');
+    tabsContainer.classList.remove('hidden');
 }
 
 // Update team comp warning
@@ -93,14 +142,18 @@ function updateTeamComp(data) {
 
 // Update recommended bans
 function updateBans(data) {
-    if (!data || !data.hasBans || !data.bans || data.bans.length === 0) {
-        bansCard.classList.add('hidden');
+    if (!data || !data.hasBans) {
+        bansSubheader.textContent = '';
+        bansList.innerHTML = '';
         return;
     }
 
-    // Show bans card
-    bansCard.classList.remove('hidden');
-    statusCard.classList.add('hidden');
+    // No matchup data for this pick
+    if (data.noData || !data.bans || data.bans.length === 0) {
+        bansSubheader.textContent = `${data.championName} ${formatRole(data.role)}`;
+        bansList.innerHTML = `<div class="no-data-msg">WTF kind of pick is this?</div>`;
+        return;
+    }
 
     // Update header
     bansSubheader.textContent = `Counters for ${data.championName} (${formatRole(data.role)})`;
@@ -132,7 +185,6 @@ function updateBuild(data) {
     }
 
     buildCard.classList.remove('hidden');
-    statusCard.classList.add('hidden');
 
     buildRole.textContent = formatRole(data.role);
     winrateLabel.textContent = data.winRateLabel || 'Win Rate';
@@ -144,12 +196,49 @@ function updateBuild(data) {
     }
 }
 
+// Update full team comp analysis (when all locked in)
+function updateFullComp(data) {
+    if (!data || !data.ready) {
+        compWaiting.classList.remove('hidden');
+        compAnalysis.classList.add('hidden');
+        return;
+    }
+
+    compWaiting.classList.add('hidden');
+    compAnalysis.classList.remove('hidden');
+
+    // Render ally team
+    allyArchetype.textContent = data.allyArchetype;
+    allyTags.innerHTML = (data.allyTags || []).map(tag =>
+        `<span class="comp-tag">${tag}</span>`
+    ).join('') || '<span class="comp-tag-none">No dominant tags</span>';
+    allyDamage.innerHTML = `
+        <span class="dmg-bar">
+            <span class="dmg-ap" style="width: ${data.allyAP}%">${data.allyAP}% AP</span>
+            <span class="dmg-ad" style="width: ${data.allyAD}%">${data.allyAD}% AD</span>
+        </span>
+    `;
+
+    // Render enemy team
+    enemyArchetype.textContent = data.enemyArchetype;
+    enemyTags.innerHTML = (data.enemyTags || []).map(tag =>
+        `<span class="comp-tag">${tag}</span>`
+    ).join('') || '<span class="comp-tag-none">No dominant tags</span>';
+    enemyDamage.innerHTML = `
+        <span class="dmg-bar">
+            <span class="dmg-ap" style="width: ${data.enemyAP}%">${data.enemyAP}% AP</span>
+            <span class="dmg-ad" style="width: ${data.enemyAD}%">${data.enemyAD}% AD</span>
+        </span>
+    `;
+}
+
 // Event listeners
 EventsOn('lcu:status', updateStatus);
 EventsOn('champselect:update', updateChampSelect);
 EventsOn('build:update', updateBuild);
 EventsOn('bans:update', updateBans);
 EventsOn('teamcomp:update', updateTeamComp);
+EventsOn('fullcomp:update', updateFullComp);
 
 // Get initial status
 GetConnectionStatus()
