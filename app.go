@@ -22,7 +22,8 @@ type App struct {
 	champions        *lcu.ChampionRegistry
 	items            *lcu.ItemRegistry
 	championDB       *data.ChampionDB
-	statsProvider    *stats.Provider // Our own data from PostgreSQL
+	statsDB          *data.StatsDB    // SQLite database for stats
+	statsProvider    *stats.Provider  // Stats queries (uses statsDB)
 	stopPoll         chan struct{}
 	lastFetchedChamp int
 	lastFetchedEnemy int
@@ -81,22 +82,44 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}()
 
-	// Initialize our stats provider (PostgreSQL)
+	// Initialize stats database and check for updates
 	go func() {
-		dbURL := os.Getenv("DATABASE_URL")
-		if dbURL == "" {
-			dbURL = "postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable"
+		// Create local SQLite database for stats
+		statsDB, err := data.NewStatsDB()
+		if err != nil {
+			fmt.Printf("Failed to open stats database: %v\n", err)
+			return
+		}
+		a.statsDB = statsDB
+
+		// Check for updates from remote manifest
+		manifestURL := os.Getenv("STATS_MANIFEST_URL")
+		if manifestURL == "" {
+			manifestURL = "" // TODO: Set default URL when hosting is configured
 		}
 
-		provider, err := stats.NewProvider(dbURL)
+		if manifestURL != "" {
+			if err := statsDB.CheckForUpdates(manifestURL); err != nil {
+				fmt.Printf("Failed to check for stats updates: %v (using cached data)\n", err)
+			}
+		} else if !statsDB.HasData() {
+			fmt.Println("No stats data available and no manifest URL configured")
+			return
+		}
+
+		// Create stats provider
+		provider, err := stats.NewProvider(statsDB)
 		if err != nil {
 			fmt.Printf("Stats provider not available: %v\n", err)
 			return
 		}
 
-		if err := provider.FetchPatch(); err != nil {
-			fmt.Printf("Failed to fetch stats patch: %v\n", err)
-			return
+		// If current patch not set from update, fetch from database
+		if provider.GetPatch() == "" {
+			if err := provider.FetchPatch(); err != nil {
+				fmt.Printf("No stats patch available: %v\n", err)
+				return
+			}
 		}
 
 		a.statsProvider = provider
@@ -121,8 +144,8 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.championDB != nil {
 		a.championDB.Close()
 	}
-	if a.statsProvider != nil {
-		a.statsProvider.Close()
+	if a.statsDB != nil {
+		a.statsDB.Close()
 	}
 }
 

@@ -1,11 +1,11 @@
 package stats
 
 import (
-	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"ghostdraft/internal/data"
 )
 
 // ItemOption holds item ID with win rate
@@ -35,9 +35,9 @@ type BuildData struct {
 	Builds       []BuildPath
 }
 
-// Provider fetches build data from our PostgreSQL database
+// Provider fetches build data from our SQLite database
 type Provider struct {
-	pool         *pgxpool.Pool
+	db           *sql.DB
 	currentPatch string
 }
 
@@ -58,34 +58,23 @@ type MatchupStat struct {
 	WinRate         float64
 }
 
-// NewProvider creates a new stats provider
-func NewProvider(databaseURL string) (*Provider, error) {
-	pool, err := pgxpool.New(context.Background(), databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Test connection
-	if err := pool.Ping(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	return &Provider{pool: pool}, nil
+// NewProvider creates a new stats provider from a StatsDB
+func NewProvider(statsDB *data.StatsDB) (*Provider, error) {
+	return &Provider{
+		db:           statsDB.GetDB(),
+		currentPatch: statsDB.GetCurrentPatch(),
+	}, nil
 }
 
-// Close closes the database connection
+// Close is a no-op since the StatsDB owns the connection
 func (p *Provider) Close() {
-	if p.pool != nil {
-		p.pool.Close()
-	}
+	// Connection owned by StatsDB
 }
 
 // FetchPatch gets the latest patch from our database
 func (p *Provider) FetchPatch() error {
-	ctx := context.Background()
-
 	var patch string
-	err := p.pool.QueryRow(ctx, `
+	err := p.db.QueryRow(`
 		SELECT patch FROM champion_stats
 		ORDER BY patch DESC
 		LIMIT 1
@@ -125,21 +114,20 @@ func roleToPosition(role string) string {
 
 // FetchChampionData gets build data for a champion from our database
 func (p *Provider) FetchChampionData(championID int, championName string, role string) (*BuildData, error) {
-	ctx := context.Background()
 	position := roleToPosition(role)
 
 	// Get total games for this champion/position to calculate pick rates
 	var totalGames int
-	err := p.pool.QueryRow(ctx, `
+	err := p.db.QueryRow(`
 		SELECT COALESCE(matches, 0) FROM champion_stats
-		WHERE patch = $1 AND champion_id = $2 AND team_position = $3
+		WHERE patch = ? AND champion_id = ? AND team_position = ?
 	`, p.currentPatch, championID, position).Scan(&totalGames)
 
 	if err != nil || totalGames == 0 {
 		// Try without patch filter if no data for current patch
-		err = p.pool.QueryRow(ctx, `
+		err = p.db.QueryRow(`
 			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
-			WHERE champion_id = $1 AND team_position = $2
+			WHERE champion_id = ? AND team_position = ?
 		`, championID, position).Scan(&totalGames)
 
 		if err != nil || totalGames == 0 {
@@ -148,10 +136,10 @@ func (p *Provider) FetchChampionData(championID int, championName string, role s
 	}
 
 	// Get item stats
-	rows, err := p.pool.Query(ctx, `
+	rows, err := p.db.Query(`
 		SELECT item_id, wins, matches
 		FROM champion_items
-		WHERE patch = $1 AND champion_id = $2 AND team_position = $3
+		WHERE patch = ? AND champion_id = ? AND team_position = ?
 		ORDER BY matches DESC
 	`, p.currentPatch, championID, position)
 
@@ -288,13 +276,12 @@ func isBootsItem(itemID int) bool {
 
 // HasData checks if we have data for a champion
 func (p *Provider) HasData(championID int, role string) bool {
-	ctx := context.Background()
 	position := roleToPosition(role)
 
 	var count int
-	err := p.pool.QueryRow(ctx, `
+	err := p.db.QueryRow(`
 		SELECT COUNT(*) FROM champion_items
-		WHERE champion_id = $1 AND team_position = $2
+		WHERE champion_id = ? AND team_position = ?
 	`, championID, position).Scan(&count)
 
 	return err == nil && count > 0
@@ -302,25 +289,24 @@ func (p *Provider) HasData(championID int, role string) bool {
 
 // FetchMatchup returns the win rate for a specific champion vs enemy matchup
 func (p *Provider) FetchMatchup(championID int, enemyChampionID int, role string) (*MatchupStat, error) {
-	ctx := context.Background()
 	position := roleToPosition(role)
 
 	var m MatchupStat
 	m.EnemyChampionID = enemyChampionID
 
 	// Try current patch first
-	err := p.pool.QueryRow(ctx, `
+	err := p.db.QueryRow(`
 		SELECT wins, matches
 		FROM champion_matchups
-		WHERE patch = $1 AND champion_id = $2 AND team_position = $3 AND enemy_champion_id = $4
+		WHERE patch = ? AND champion_id = ? AND team_position = ? AND enemy_champion_id = ?
 	`, p.currentPatch, championID, position, enemyChampionID).Scan(&m.Wins, &m.Matches)
 
 	if err != nil || m.Matches == 0 {
 		// Try without patch filter
-		err = p.pool.QueryRow(ctx, `
+		err = p.db.QueryRow(`
 			SELECT SUM(wins), SUM(matches)
 			FROM champion_matchups
-			WHERE champion_id = $1 AND team_position = $2 AND enemy_champion_id = $3
+			WHERE champion_id = ? AND team_position = ? AND enemy_champion_id = ?
 		`, championID, position, enemyChampionID).Scan(&m.Wins, &m.Matches)
 
 		if err != nil || m.Matches == 0 {
@@ -334,22 +320,21 @@ func (p *Provider) FetchMatchup(championID int, enemyChampionID int, role string
 
 // FetchAllMatchups returns all matchup data for a champion in a role
 func (p *Provider) FetchAllMatchups(championID int, role string) ([]MatchupStat, error) {
-	ctx := context.Background()
 	position := roleToPosition(role)
 
-	rows, err := p.pool.Query(ctx, `
+	rows, err := p.db.Query(`
 		SELECT enemy_champion_id, wins, matches
 		FROM champion_matchups
-		WHERE patch = $1 AND champion_id = $2 AND team_position = $3
+		WHERE patch = ? AND champion_id = ? AND team_position = ?
 		ORDER BY matches DESC
 	`, p.currentPatch, championID, position)
 
 	if err != nil {
 		// Try without patch filter
-		rows, err = p.pool.Query(ctx, `
+		rows, err = p.db.Query(`
 			SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
 			FROM champion_matchups
-			WHERE champion_id = $1 AND team_position = $2
+			WHERE champion_id = ? AND team_position = ?
 			GROUP BY enemy_champion_id
 			ORDER BY SUM(matches) DESC
 		`, championID, position)
@@ -378,7 +363,6 @@ func (p *Provider) FetchAllMatchups(championID int, role string) ([]MatchupStat,
 // FetchCounterMatchups returns the champions that counter the specified champion
 // (i.e., matchups where the specified champion has the lowest win rate)
 func (p *Provider) FetchCounterMatchups(championID int, role string, limit int) ([]MatchupStat, error) {
-	ctx := context.Background()
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -387,24 +371,24 @@ func (p *Provider) FetchCounterMatchups(championID int, role string, limit int) 
 
 	// Query matchups ordered by lowest win rate (hardest counters first)
 	// Only include matchups with at least 10 games for statistical significance
-	rows, err := p.pool.Query(ctx, `
+	rows, err := p.db.Query(`
 		SELECT enemy_champion_id, wins, matches
 		FROM champion_matchups
-		WHERE patch = $1 AND champion_id = $2 AND team_position = $3 AND matches >= 10
-		ORDER BY (wins::float / matches::float) ASC
-		LIMIT $4
+		WHERE patch = ? AND champion_id = ? AND team_position = ? AND matches >= 10
+		ORDER BY (CAST(wins AS REAL) / CAST(matches AS REAL)) ASC
+		LIMIT ?
 	`, p.currentPatch, championID, position, limit)
 
 	if err != nil {
 		// Try without patch filter
-		rows, err = p.pool.Query(ctx, `
+		rows, err = p.db.Query(`
 			SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
 			FROM champion_matchups
-			WHERE champion_id = $1 AND team_position = $2
+			WHERE champion_id = ? AND team_position = ?
 			GROUP BY enemy_champion_id
 			HAVING SUM(matches) >= 10
-			ORDER BY (SUM(wins)::float / SUM(matches)::float) ASC
-			LIMIT $3
+			ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) ASC
+			LIMIT ?
 		`, championID, position, limit)
 
 		if err != nil {

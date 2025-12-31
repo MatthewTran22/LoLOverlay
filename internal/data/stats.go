@@ -1,0 +1,330 @@
+package data
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// StatsDB manages the stats database with remote update capability
+type StatsDB struct {
+	db           *sql.DB
+	currentPatch string
+}
+
+// Manifest represents the remote manifest.json structure
+type Manifest struct {
+	Patch       string `json:"patch"`
+	DataURL     string `json:"dataUrl"`
+	GeneratedAt string `json:"generatedAt"`
+}
+
+// DataExport represents the data.json structure from the reducer
+type DataExport struct {
+	Patch            string              `json:"patch"`
+	GeneratedAt      string              `json:"generatedAt"`
+	ChampionStats    []ChampionStatJSON  `json:"championStats"`
+	ChampionItems    []ChampionItemJSON  `json:"championItems"`
+	ChampionMatchups []ChampionMatchupJSON `json:"championMatchups"`
+}
+
+type ChampionStatJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
+}
+
+type ChampionItemJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	ItemID       int    `json:"itemId"`
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
+}
+
+type ChampionMatchupJSON struct {
+	Patch           string `json:"patch"`
+	ChampionID      int    `json:"championId"`
+	TeamPosition    string `json:"teamPosition"`
+	EnemyChampionID int    `json:"enemyChampionId"`
+	Wins            int    `json:"wins"`
+	Matches         int    `json:"matches"`
+}
+
+// NewStatsDB creates and initializes the stats database
+func NewStatsDB() (*StatsDB, error) {
+	// Get user's app data directory
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		configDir = "."
+	}
+
+	dbDir := filepath.Join(configDir, "GhostDraft")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create db directory: %w", err)
+	}
+
+	dbPath := filepath.Join(dbDir, "stats.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	sdb := &StatsDB{db: db}
+	if err := sdb.init(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Load current patch from database
+	sdb.loadCurrentPatch()
+
+	return sdb, nil
+}
+
+// init creates the schema
+func (s *StatsDB) init() error {
+	schema := `
+		CREATE TABLE IF NOT EXISTS data_version (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			patch TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS champion_stats (
+			patch TEXT NOT NULL,
+			champion_id INTEGER NOT NULL,
+			team_position TEXT NOT NULL,
+			wins INTEGER NOT NULL DEFAULT 0,
+			matches INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (patch, champion_id, team_position)
+		);
+
+		CREATE TABLE IF NOT EXISTS champion_items (
+			patch TEXT NOT NULL,
+			champion_id INTEGER NOT NULL,
+			team_position TEXT NOT NULL,
+			item_id INTEGER NOT NULL,
+			wins INTEGER NOT NULL DEFAULT 0,
+			matches INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (patch, champion_id, team_position, item_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS champion_matchups (
+			patch TEXT NOT NULL,
+			champion_id INTEGER NOT NULL,
+			team_position TEXT NOT NULL,
+			enemy_champion_id INTEGER NOT NULL,
+			wins INTEGER NOT NULL DEFAULT 0,
+			matches INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (patch, champion_id, team_position, enemy_champion_id)
+		);
+	`
+
+	_, err := s.db.Exec(schema)
+	if err != nil {
+		return fmt.Errorf("failed to create schema: %w", err)
+	}
+
+	return nil
+}
+
+// loadCurrentPatch loads the current patch from the database
+func (s *StatsDB) loadCurrentPatch() {
+	var patch string
+	err := s.db.QueryRow("SELECT patch FROM data_version WHERE id = 1").Scan(&patch)
+	if err == nil {
+		s.currentPatch = patch
+	}
+}
+
+// GetCurrentPatch returns the locally stored patch version
+func (s *StatsDB) GetCurrentPatch() string {
+	return s.currentPatch
+}
+
+// GetDB returns the underlying database connection
+func (s *StatsDB) GetDB() *sql.DB {
+	return s.db
+}
+
+// CheckForUpdates fetches the remote manifest and updates if newer version available
+func (s *StatsDB) CheckForUpdates(manifestURL string) error {
+	if manifestURL == "" {
+		return fmt.Errorf("manifest URL not configured")
+	}
+
+	fmt.Printf("[Stats] Checking for updates from: %s\n", manifestURL)
+
+	// Fetch manifest with timeout
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(manifestURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch manifest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("manifest fetch returned status %d", resp.StatusCode)
+	}
+
+	var manifest Manifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	fmt.Printf("[Stats] Remote patch: %s, Local patch: %s\n", manifest.Patch, s.currentPatch)
+
+	// Compare versions (simple string comparison works for semantic versions like "14.24")
+	if manifest.Patch <= s.currentPatch {
+		fmt.Println("[Stats] Local data is up to date")
+		return nil
+	}
+
+	// Download and import new data
+	fmt.Printf("[Stats] Downloading new data from: %s\n", manifest.DataURL)
+	if err := s.downloadAndImport(manifest.DataURL); err != nil {
+		return fmt.Errorf("failed to download and import data: %w", err)
+	}
+
+	s.currentPatch = manifest.Patch
+	fmt.Printf("[Stats] Updated to patch: %s\n", manifest.Patch)
+	return nil
+}
+
+// downloadAndImport downloads data.json and imports it into SQLite
+func (s *StatsDB) downloadAndImport(dataURL string) error {
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(dataURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch data: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("data fetch returned status %d", resp.StatusCode)
+	}
+
+	// Read and parse JSON
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read data: %w", err)
+	}
+
+	var data DataExport
+	if err := json.Unmarshal(body, &data); err != nil {
+		return fmt.Errorf("failed to parse data: %w", err)
+	}
+
+	// Import into database
+	return s.ImportData(&data)
+}
+
+// ImportData bulk inserts data into SQLite using a single transaction
+func (s *StatsDB) ImportData(data *DataExport) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // Safe to call even after Commit()
+
+	// Clear existing data for this patch
+	if _, err := tx.Exec("DELETE FROM champion_stats WHERE patch = ?", data.Patch); err != nil {
+		return fmt.Errorf("failed to clear champion_stats: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM champion_items WHERE patch = ?", data.Patch); err != nil {
+		return fmt.Errorf("failed to clear champion_items: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM champion_matchups WHERE patch = ?", data.Patch); err != nil {
+		return fmt.Errorf("failed to clear champion_matchups: %w", err)
+	}
+
+	// Insert champion_stats using prepared statement
+	stmtStats, err := tx.Prepare(`
+		INSERT INTO champion_stats (patch, champion_id, team_position, wins, matches)
+		VALUES (?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare champion_stats statement: %w", err)
+	}
+	defer stmtStats.Close()
+
+	for _, stat := range data.ChampionStats {
+		if _, err := stmtStats.Exec(stat.Patch, stat.ChampionID, stat.TeamPosition, stat.Wins, stat.Matches); err != nil {
+			return fmt.Errorf("failed to insert champion_stats: %w", err)
+		}
+	}
+
+	// Insert champion_items using prepared statement
+	stmtItems, err := tx.Prepare(`
+		INSERT INTO champion_items (patch, champion_id, team_position, item_id, wins, matches)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare champion_items statement: %w", err)
+	}
+	defer stmtItems.Close()
+
+	for _, item := range data.ChampionItems {
+		if _, err := stmtItems.Exec(item.Patch, item.ChampionID, item.TeamPosition, item.ItemID, item.Wins, item.Matches); err != nil {
+			return fmt.Errorf("failed to insert champion_items: %w", err)
+		}
+	}
+
+	// Insert champion_matchups using prepared statement
+	stmtMatchups, err := tx.Prepare(`
+		INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare champion_matchups statement: %w", err)
+	}
+	defer stmtMatchups.Close()
+
+	for _, matchup := range data.ChampionMatchups {
+		if _, err := stmtMatchups.Exec(matchup.Patch, matchup.ChampionID, matchup.TeamPosition, matchup.EnemyChampionID, matchup.Wins, matchup.Matches); err != nil {
+			return fmt.Errorf("failed to insert champion_matchups: %w", err)
+		}
+	}
+
+	// Update version
+	if _, err := tx.Exec(`
+		INSERT OR REPLACE INTO data_version (id, patch, updated_at)
+		VALUES (1, ?, datetime('now'))
+	`, data.Patch); err != nil {
+		return fmt.Errorf("failed to update version: %w", err)
+	}
+
+	// Commit transaction - single disk sync
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	fmt.Printf("[Stats] Imported: %d champion stats, %d item stats, %d matchup stats\n",
+		len(data.ChampionStats), len(data.ChampionItems), len(data.ChampionMatchups))
+
+	return nil
+}
+
+// HasData checks if the database has any stats data
+func (s *StatsDB) HasData() bool {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM champion_stats").Scan(&count)
+	return err == nil && count > 0
+}
+
+// Close closes the database connection
+func (s *StatsDB) Close() error {
+	return s.db.Close()
+}

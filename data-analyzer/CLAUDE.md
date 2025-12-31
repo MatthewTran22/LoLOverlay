@@ -1,36 +1,47 @@
 # Data Analyzer - Match History Collection & Aggregation
 
 ## Purpose
-Collect match history data from Riot API and aggregate into PostgreSQL for the main GhostDraft overlay to use instead of external APIs.
+Collect match history data from Riot API and aggregate into static JSON files for distribution to the GhostDraft client app.
 
 ## Architecture
 
 ```
-Riot API → Collector (spider) → JSONL files → Reducer → PostgreSQL
-                                    ↓
-                              hot/ → warm/ → cold/
+Riot API → Collector (spider) → JSONL files → Reducer → data.json + manifest.json
+                                    ↓                            ↓
+                              hot/ → warm/ → cold/         (hosted remotely)
+                                                                 ↓
+                                              Client App → Local SQLite
 ```
 
 ### Components
 1. **Collector** - Spider that crawls match history from Riot API
-2. **Reducer** - Processes JSONL files into aggregated PostgreSQL tables
+2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON (and optionally PostgreSQL)
 3. **Server** - Web UI for viewing collected data (optional)
 
 ## Quick Start
 
 ```bash
-# 1. Start PostgreSQL
-docker-compose up -d
-
-# 2. Collect match data (spider from a starting player)
+# 1. Collect match data (spider from a starting player)
 go run cmd/collector/main.go --riot-id="Player#NA1"
 
-# 3. Process collected data into aggregated stats
-go run cmd/reducer/main.go
+# 2. Process collected data and export to JSON
+go run cmd/reducer/main.go --output-dir=./export --base-url=https://your-cdn.com/data --no-db
 
-# 4. (Optional) View data in web UI
+# 3. Upload export/manifest.json and export/data.json to your CDN
+
+# 4. (Optional) View data in web UI (requires PostgreSQL)
+docker-compose up -d
+go run cmd/reducer/main.go  # Writes to PostgreSQL
 go run cmd/server/main.go
 # Open http://localhost:8080
+```
+
+### Reducer Options
+```bash
+go run cmd/reducer/main.go \
+  --output-dir=./export \    # Directory for JSON output
+  --base-url=https://... \   # Base URL for manifest.dataUrl
+  --no-db                    # Skip PostgreSQL writes (JSON only)
 ```
 
 ## Environment Variables
@@ -117,8 +128,37 @@ CREATE TABLE champion_matchups (
 - **Item deduplication**: Only counts unique items per player inventory
 - **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
 - **Matchup calculation**: Groups participants by matchId to find lane opponents
-- **Upsert logic**: Incremental updates with `ON CONFLICT DO UPDATE`
+- **JSON Export**: Aggregates ALL files together and exports to data.json + manifest.json
+- **Upsert logic**: Incremental updates with `ON CONFLICT DO UPDATE` (PostgreSQL mode)
 - **Archiving**: Compresses processed files to cold/ with gzip
+
+## JSON Export Format
+
+### manifest.json
+```json
+{
+  "patch": "14.24",
+  "dataUrl": "https://your-cdn.com/data/data.json",
+  "generatedAt": "2025-01-15T10:30:00Z"
+}
+```
+
+### data.json
+```json
+{
+  "patch": "14.24",
+  "generatedAt": "2025-01-15T10:30:00Z",
+  "championStats": [
+    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "wins": 5234, "matches": 10000}
+  ],
+  "championItems": [
+    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3089, "wins": 3500, "matches": 6000}
+  ],
+  "championMatchups": [
+    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "enemyChampionId": 238, "wins": 450, "matches": 1000}
+  ]
+}
+```
 
 ## JSONL Record Format
 ```json

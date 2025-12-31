@@ -52,6 +52,7 @@ func main() {
 	http.HandleFunc("/api/aggregated/patches", handlePatches)
 	http.HandleFunc("/api/aggregated/champions", handleAggregatedChampions)
 	http.HandleFunc("/api/aggregated/items", handleAggregatedItems)
+	http.HandleFunc("/api/aggregated/matchups", handleAggregatedMatchups)
 
 	// Static files - try multiple paths
 	webDir := "web"
@@ -204,4 +205,37 @@ func handleAggregatedItems(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+func handleAggregatedMatchups(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	patch := r.URL.Query().Get("patch")
+	championID := r.URL.Query().Get("champion")
+	position := r.URL.Query().Get("position")
+	limitStr := r.URL.Query().Get("limit")
+
+	if patch == "" || championID == "" || position == "" {
+		http.Error(w, "patch, champion, and position query params required", http.StatusBadRequest)
+		return
+	}
+
+	var champID int
+	fmt.Sscanf(championID, "%d", &champID)
+
+	limit := 10
+	if limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	best, worst, err := database.GetAggregatedMatchupStats(ctx, patch, champID, position, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"best":  best,
+		"worst": worst,
+	})
 }

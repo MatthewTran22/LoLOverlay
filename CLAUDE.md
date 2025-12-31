@@ -5,7 +5,7 @@ A Wails-based League of Legends overlay that provides real-time champion select 
 ## Tech Stack
 - **Backend**: Go with Wails v2
 - **Frontend**: Vanilla JavaScript (no framework)
-- **Data Sources**: Riot LCU API, PostgreSQL (own match data), Data Dragon
+- **Data Sources**: Riot LCU API, Local SQLite (stats from remote JSON), Data Dragon
 
 ## Project Structure
 
@@ -24,9 +24,10 @@ A Wails-based League of Legends overlay that provides real-time champion select 
 │   │   ├── items.go       # ItemRegistry - ID→name/icon from Data Dragon
 │   │   └── types.go       # LCU data structures
 │   ├── stats/
-│   │   └── provider.go    # PostgreSQL queries for builds, matchups, counters
+│   │   └── provider.go    # SQLite queries for builds, matchups, counters
 │   └── data/
-│       └── champions.go   # SQLite DB for static champion data (damage types, tags)
+│       ├── champions.go   # SQLite DB for static champion data (damage types, tags)
+│       └── stats.go       # SQLite DB for match stats with remote update mechanism
 ├── data-analyzer/         # Separate module for collecting match data
 ```
 
@@ -40,21 +41,31 @@ LCU WebSocket → websocket.go:handleChampSelectEvent
              → Frontend listeners update DOM
 ```
 
-### 2. Stats Provider (PostgreSQL)
-The `internal/stats/provider.go` queries our own match data:
+### 2. Stats Data Distribution
+```
+Reducer (JSONL files) → Aggregates stats → Exports data.json + manifest.json
+                                                      ↓ (hosted remotely)
+Client App (on startup) → Fetches manifest.json → Compares patch version
+                       → If newer: downloads data.json → Bulk inserts to SQLite
+                       → StatsProvider queries local SQLite
+```
+
+### 3. Stats Provider (SQLite)
+The `internal/stats/provider.go` queries local SQLite database:
 - **FetchChampionData**: Item builds with win rates and pick rates
 - **FetchAllMatchups**: All matchup win rates for a champion
 - **FetchCounterMatchups**: Top N counters (lowest win rate matchups)
 - **FetchMatchup**: Specific champion vs enemy win rate
 
-### Database Tables (managed by data-analyzer/reducer)
+### Database Tables (local SQLite)
 ```sql
 champion_stats    -- Champion win rates by patch/position
 champion_items    -- Item stats per champion/position
 champion_matchups -- Matchup win rates between champions
+data_version      -- Tracks current patch version
 ```
 
-### 3. Frontend Events
+### 4. Frontend Events
 ```javascript
 EventsOn('lcu:status', updateStatus);
 EventsOn('champselect:update', updateChampSelect);
@@ -72,9 +83,17 @@ EventsOn('fullcomp:update', updateFullComp);
 
 ## Important Implementation Notes
 
-### Stats Provider
-- Connects to PostgreSQL at `DATABASE_URL` env var or default localhost
-- Fetches current patch from database on startup
+### Stats Database (internal/data/stats.go)
+- Located at `{UserConfigDir}/GhostDraft/stats.db`
+- On startup, checks `STATS_MANIFEST_URL` for updates
+- Compares remote patch version with local `data_version` table
+- Downloads and bulk-inserts new data in a single transaction (for performance)
+- Falls back to cached data if network unavailable
+
+### Stats Provider (internal/stats/provider.go)
+- Queries local SQLite instead of remote PostgreSQL
+- Uses `?` placeholders (SQLite) instead of `$1, $2` (PostgreSQL)
+- Uses `CAST(... AS REAL)` for floating-point division
 - Falls back to aggregated data across patches if current patch has no data
 
 ### Item Filtering
@@ -86,15 +105,14 @@ EventsOn('fullcomp:update', updateFullComp);
 - `lastBanFetchKey` - `"{champId}-{role}"` for bans
 - `lastItemFetchKey` - `"{champId}-{role}"` for items
 
-## SQLite Database
-Located at `{UserConfigDir}/GhostDraft/champions.db`
-- Auto-created on first run
-- Stores: champion name, damage type (AP/AD/Mixed/Tank), role tags
-- Used for team comp analysis
+## SQLite Databases
+Located at `{UserConfigDir}/GhostDraft/`:
+- `champions.db` - Static champion metadata (damage types, tags)
+- `stats.db` - Match statistics (downloaded from remote)
 
 ## Environment Variables
 ```
-DATABASE_URL=postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable
+STATS_MANIFEST_URL=https://your-cdn.example.com/manifest.json  # Remote stats location
 ```
 
 ## Common Tasks
@@ -118,3 +136,13 @@ wails build              # Build production binary
 
 ## Data Pipeline
 See `data-analyzer/CLAUDE.md` for the match collection and aggregation pipeline.
+
+### Exporting Stats Data
+```bash
+cd data-analyzer
+go run cmd/reducer/main.go --output-dir=./export --base-url=https://your-cdn.example.com/data --no-db
+```
+
+This generates:
+- `export/manifest.json` - Version info and data URL
+- `export/data.json` - All aggregated stats

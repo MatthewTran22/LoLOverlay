@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -12,9 +13,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
+)
+
+// CLI flags
+var (
+	outputDir = flag.String("output-dir", "", "Directory to output data.json and manifest.json")
+	baseURL   = flag.String("base-url", "", "Base URL for manifest.dataUrl (e.g., https://cdn.example.com/data)")
+	noDB      = flag.Bool("no-db", false, "Skip PostgreSQL writes, only export JSON")
 )
 
 const DDRAGON_VERSION = "14.24.1"
@@ -147,7 +156,50 @@ type MatchupStats struct {
 	Matches int
 }
 
+// JSON export types
+type DataExport struct {
+	Patch            string              `json:"patch"`
+	GeneratedAt      string              `json:"generatedAt"`
+	ChampionStats    []ChampionStatJSON  `json:"championStats"`
+	ChampionItems    []ChampionItemJSON  `json:"championItems"`
+	ChampionMatchups []ChampionMatchupJSON `json:"championMatchups"`
+}
+
+type ChampionStatJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
+}
+
+type ChampionItemJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	ItemID       int    `json:"itemId"`
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
+}
+
+type ChampionMatchupJSON struct {
+	Patch           string `json:"patch"`
+	ChampionID      int    `json:"championId"`
+	TeamPosition    string `json:"teamPosition"`
+	EnemyChampionID int    `json:"enemyChampionId"`
+	Wins            int    `json:"wins"`
+	Matches         int    `json:"matches"`
+}
+
+type Manifest struct {
+	Patch       string `json:"patch"`
+	DataURL     string `json:"dataUrl"`
+	GeneratedAt string `json:"generatedAt"`
+}
+
 func main() {
+	flag.Parse()
+
 	// Load .env
 	envPaths := []string{".env", "../.env", "../../.env", "data-analyzer/.env"}
 	for _, path := range envPaths {
@@ -177,22 +229,27 @@ func main() {
 		log.Fatalf("Failed to load item data: %v", err)
 	}
 
-	// Connect to PostgreSQL
 	ctx := context.Background()
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable"
-	}
+	var conn *pgx.Conn
 
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer conn.Close(ctx)
+	// Connect to PostgreSQL only if not skipping DB
+	if !*noDB {
+		dbURL := os.Getenv("DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable"
+		}
 
-	// Create tables if they don't exist
-	if err := createTables(ctx, conn); err != nil {
-		log.Fatalf("Failed to create tables: %v", err)
+		var err error
+		conn, err = pgx.Connect(ctx, dbURL)
+		if err != nil {
+			log.Fatalf("Failed to connect to database: %v", err)
+		}
+		defer conn.Close(ctx)
+
+		// Create tables if they don't exist
+		if err := createTables(ctx, conn); err != nil {
+			log.Fatalf("Failed to create tables: %v", err)
+		}
 	}
 
 	// Scan warm directory for .jsonl files
@@ -208,16 +265,109 @@ func main() {
 
 	fmt.Printf("Found %d files to process\n", len(files))
 
-	// Process each file
+	// Aggregate ALL files together into global maps
+	allChampionStats := make(map[ChampionStatsKey]*ChampionStats)
+	allItemStats := make(map[ItemStatsKey]*ItemStats)
+	allMatchupStats := make(map[MatchupStatsKey]*MatchupStats)
+	var detectedPatch string
+
+	// Process each file and accumulate stats
 	for i, filePath := range files {
 		fmt.Printf("\n[%d/%d] Processing: %s\n", i+1, len(files), filepath.Base(filePath))
 
-		if err := processFile(ctx, conn, filePath, coldDir); err != nil {
+		championStats, itemStats, matchupStats, patch, err := aggregateFile(filePath)
+		if err != nil {
 			log.Printf("  Error processing file: %v", err)
 			continue
 		}
 
-		fmt.Printf("  Successfully processed and archived\n")
+		// Track the patch (use the last one seen)
+		if patch != "" {
+			detectedPatch = patch
+		}
+
+		// Merge into global maps
+		for k, v := range championStats {
+			if existing, ok := allChampionStats[k]; ok {
+				existing.Wins += v.Wins
+				existing.Matches += v.Matches
+			} else {
+				allChampionStats[k] = v
+			}
+		}
+
+		for k, v := range itemStats {
+			if existing, ok := allItemStats[k]; ok {
+				existing.Wins += v.Wins
+				existing.Matches += v.Matches
+			} else {
+				allItemStats[k] = v
+			}
+		}
+
+		for k, v := range matchupStats {
+			if existing, ok := allMatchupStats[k]; ok {
+				existing.Wins += v.Wins
+				existing.Matches += v.Matches
+			} else {
+				allMatchupStats[k] = v
+			}
+		}
+
+		fmt.Printf("  Aggregated: %d champion stats, %d item stats, %d matchup stats\n",
+			len(championStats), len(itemStats), len(matchupStats))
+	}
+
+	fmt.Printf("\n=== Total Aggregated ===\n")
+	fmt.Printf("Champion stats: %d\n", len(allChampionStats))
+	fmt.Printf("Item stats: %d\n", len(allItemStats))
+	fmt.Printf("Matchup stats: %d\n", len(allMatchupStats))
+	fmt.Printf("Detected patch: %s\n", detectedPatch)
+
+	// Export to JSON if output-dir is specified
+	if *outputDir != "" {
+		fmt.Printf("\n=== Exporting JSON ===\n")
+		if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allMatchupStats); err != nil {
+			log.Fatalf("Failed to export JSON: %v", err)
+		}
+		if err := exportManifest(*outputDir, *baseURL, detectedPatch); err != nil {
+			log.Fatalf("Failed to export manifest: %v", err)
+		}
+		fmt.Printf("Exported to: %s\n", *outputDir)
+	}
+
+	// Write to PostgreSQL if not skipping
+	if !*noDB && conn != nil {
+		fmt.Printf("\n=== Writing to PostgreSQL ===\n")
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			log.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+
+		if err := upsertChampionStats(ctx, tx, allChampionStats); err != nil {
+			log.Fatalf("Champion stats upsert failed: %v", err)
+		}
+
+		if err := upsertItemStats(ctx, tx, allItemStats); err != nil {
+			log.Fatalf("Item stats upsert failed: %v", err)
+		}
+
+		if err := upsertMatchupStats(ctx, tx, allMatchupStats); err != nil {
+			log.Fatalf("Matchup stats upsert failed: %v", err)
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			log.Fatalf("Transaction commit failed: %v", err)
+		}
+		fmt.Println("Successfully wrote to PostgreSQL")
+	}
+
+	// Archive files after successful processing
+	for _, filePath := range files {
+		if err := archiveFile(filePath, coldDir); err != nil {
+			log.Printf("Warning: Failed to archive %s: %v", filepath.Base(filePath), err)
+		}
 	}
 
 	fmt.Println("\n=== Reducer Complete ===")
@@ -258,57 +408,17 @@ func createTables(ctx context.Context, conn *pgx.Conn) error {
 	return err
 }
 
-func processFile(ctx context.Context, conn *pgx.Conn, filePath, coldDir string) error {
-	// Aggregate stats from file
-	championStats, itemStats, matchupStats, err := aggregateFile(filePath)
-	if err != nil {
-		return fmt.Errorf("aggregation failed: %w", err)
-	}
-
-	fmt.Printf("  Aggregated: %d champion stats, %d item stats, %d matchup stats\n",
-		len(championStats), len(itemStats), len(matchupStats))
-
-	// Upsert to database in a transaction
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := upsertChampionStats(ctx, tx, championStats); err != nil {
-		return fmt.Errorf("champion stats upsert failed: %w", err)
-	}
-
-	if err := upsertItemStats(ctx, tx, itemStats); err != nil {
-		return fmt.Errorf("item stats upsert failed: %w", err)
-	}
-
-	if err := upsertMatchupStats(ctx, tx, matchupStats); err != nil {
-		return fmt.Errorf("matchup stats upsert failed: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("transaction commit failed: %w", err)
-	}
-
-	// Archive file (only after successful DB commit)
-	if err := archiveFile(filePath, coldDir); err != nil {
-		return fmt.Errorf("archiving failed: %w", err)
-	}
-
-	return nil
-}
-
-func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, map[MatchupStatsKey]*MatchupStats, error) {
+func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, map[MatchupStatsKey]*MatchupStats, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 	defer file.Close()
 
 	championStats := make(map[ChampionStatsKey]*ChampionStats)
 	itemStats := make(map[ItemStatsKey]*ItemStats)
 	matchupStats := make(map[MatchupStatsKey]*MatchupStats)
+	var detectedPatch string
 
 	// First pass: group all participants by matchId
 	matchParticipants := make(map[string][]RawMatch)
@@ -334,6 +444,9 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 
 		// Normalize patch version
 		patch := normalizePatch(match.GameVersion)
+		if detectedPatch == "" {
+			detectedPatch = patch
+		}
 
 		// Aggregate champion stats
 		champKey := ChampionStatsKey{
@@ -379,7 +492,7 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 
 	// Second pass: calculate matchups from grouped participants
@@ -438,7 +551,7 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 	}
 
 	fmt.Printf("  Processed %d lines, %d unique matches\n", lineNum, len(matchParticipants))
-	return championStats, itemStats, matchupStats, nil
+	return championStats, itemStats, matchupStats, detectedPatch, nil
 }
 
 // normalizePatch truncates version to first two segments (e.g., 14.23.448 -> 14.23)
@@ -592,5 +705,110 @@ func archiveFile(srcPath, coldDir string) error {
 	}
 
 	fmt.Printf("  Archived to: %s\n", filename)
+	return nil
+}
+
+// exportToJSON exports aggregated data to data.json
+func exportToJSON(outputDir, patch string,
+	championStats map[ChampionStatsKey]*ChampionStats,
+	itemStats map[ItemStatsKey]*ItemStats,
+	matchupStats map[MatchupStatsKey]*MatchupStats) error {
+
+	// Ensure output directory exists
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Convert maps to JSON arrays
+	var champStatsJSON []ChampionStatJSON
+	for k, v := range championStats {
+		champStatsJSON = append(champStatsJSON, ChampionStatJSON{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+
+	var itemStatsJSON []ChampionItemJSON
+	for k, v := range itemStats {
+		itemStatsJSON = append(itemStatsJSON, ChampionItemJSON{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			ItemID:       k.ItemID,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+
+	var matchupStatsJSON []ChampionMatchupJSON
+	for k, v := range matchupStats {
+		matchupStatsJSON = append(matchupStatsJSON, ChampionMatchupJSON{
+			Patch:           k.Patch,
+			ChampionID:      k.ChampionID,
+			TeamPosition:    k.TeamPosition,
+			EnemyChampionID: k.EnemyChampionID,
+			Wins:            v.Wins,
+			Matches:         v.Matches,
+		})
+	}
+
+	export := DataExport{
+		Patch:            patch,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		ChampionStats:    champStatsJSON,
+		ChampionItems:    itemStatsJSON,
+		ChampionMatchups: matchupStatsJSON,
+	}
+
+	// Write data.json
+	dataPath := filepath.Join(outputDir, "data.json")
+	dataFile, err := os.Create(dataPath)
+	if err != nil {
+		return fmt.Errorf("failed to create data.json: %w", err)
+	}
+	defer dataFile.Close()
+
+	encoder := json.NewEncoder(dataFile)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(export); err != nil {
+		return fmt.Errorf("failed to write data.json: %w", err)
+	}
+
+	fmt.Printf("  Wrote data.json: %d champion stats, %d item stats, %d matchup stats\n",
+		len(champStatsJSON), len(itemStatsJSON), len(matchupStatsJSON))
+	return nil
+}
+
+// exportManifest creates manifest.json for version checking
+func exportManifest(outputDir, baseURL, patch string) error {
+	dataURL := baseURL
+	if dataURL != "" && !strings.HasSuffix(dataURL, "/") {
+		dataURL += "/"
+	}
+	dataURL += "data.json"
+
+	manifest := Manifest{
+		Patch:       patch,
+		DataURL:     dataURL,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	manifestPath := filepath.Join(outputDir, "manifest.json")
+	manifestFile, err := os.Create(manifestPath)
+	if err != nil {
+		return fmt.Errorf("failed to create manifest.json: %w", err)
+	}
+	defer manifestFile.Close()
+
+	encoder := json.NewEncoder(manifestFile)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(manifest); err != nil {
+		return fmt.Errorf("failed to write manifest.json: %w", err)
+	}
+
+	fmt.Printf("  Wrote manifest.json: patch=%s, dataUrl=%s\n", patch, dataURL)
 	return nil
 }
