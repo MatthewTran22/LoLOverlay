@@ -92,6 +92,16 @@ func (r *ChampionRegistry) Load() error {
 	r.version = latestVersion
 	r.loaded = true
 	fmt.Printf("Loaded %d champions from Data Dragon (v%s)\n", len(r.champions), latestVersion)
+
+	// Debug: Check for new champions
+	for _, checkID := range []int{799, 800, 904} {
+		if info, ok := r.champions[checkID]; ok {
+			fmt.Printf("  ✓ Champion %d: %s (icon: %s)\n", checkID, info.Name, info.IconID)
+		} else {
+			fmt.Printf("  ✗ Champion %d: NOT FOUND\n", checkID)
+		}
+	}
+
 	return nil
 }
 

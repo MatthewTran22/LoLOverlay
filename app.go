@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"ghostdraft/internal/data"
 	"ghostdraft/internal/lcu"
-	"ghostdraft/internal/ugg"
+	"ghostdraft/internal/stats"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -21,7 +22,7 @@ type App struct {
 	champions        *lcu.ChampionRegistry
 	items            *lcu.ItemRegistry
 	championDB       *data.ChampionDB
-	uggFetcher       *ugg.Fetcher
+	statsProvider    *stats.Provider // Our own data from PostgreSQL
 	stopPoll         chan struct{}
 	lastFetchedChamp int
 	lastFetchedEnemy int
@@ -37,7 +38,6 @@ func NewApp() *App {
 		wsClient:      lcu.NewWebSocketClient(),
 		champions:     lcu.NewChampionRegistry(),
 		items:         lcu.NewItemRegistry(),
-		uggFetcher:    ugg.NewFetcher(),
 		stopPoll:      make(chan struct{}),
 		windowVisible: true,
 	}
@@ -69,7 +69,7 @@ func (a *App) startup(ctx context.Context) {
 		runtime.WindowSetPosition(ctx, x, y)
 	}
 
-	// Load data from Data Dragon and U.GG in parallel
+	// Load data from Data Dragon in parallel
 	go func() {
 		if err := a.champions.Load(); err != nil {
 			fmt.Printf("Failed to load champions: %v\n", err)
@@ -80,10 +80,27 @@ func (a *App) startup(ctx context.Context) {
 			fmt.Printf("Failed to load items: %v\n", err)
 		}
 	}()
+
+	// Initialize our stats provider (PostgreSQL)
 	go func() {
-		if err := a.uggFetcher.FetchPatch(); err != nil {
-			fmt.Printf("Failed to fetch U.GG patch: %v\n", err)
+		dbURL := os.Getenv("DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable"
 		}
+
+		provider, err := stats.NewProvider(dbURL)
+		if err != nil {
+			fmt.Printf("Stats provider not available: %v\n", err)
+			return
+		}
+
+		if err := provider.FetchPatch(); err != nil {
+			fmt.Printf("Failed to fetch stats patch: %v\n", err)
+			return
+		}
+
+		a.statsProvider = provider
+		fmt.Printf("Stats provider ready (patch %s)\n", provider.GetPatch())
 	}()
 
 	// Set up champ select handler
@@ -103,6 +120,9 @@ func (a *App) shutdown(ctx context.Context) {
 	a.lcuClient.Disconnect()
 	if a.championDB != nil {
 		a.championDB.Close()
+	}
+	if a.statsProvider != nil {
+		a.statsProvider.Close()
 	}
 }
 
@@ -286,9 +306,14 @@ func (a *App) onChampSelectUpdate(session *lcu.ChampSelectSession, inChampSelect
 	}
 }
 
-// fetchAndEmitBuild fetches matchup data from U.GG and emits it to frontend
+// fetchAndEmitBuild fetches matchup data from our database and emits it to frontend
 func (a *App) fetchAndEmitBuild(championID int, championName string, role string, enemyChampionIDs []int) {
-	fmt.Printf("Fetching U.GG matchup for %s (%s) vs %d enemies...\n", championName, role, len(enemyChampionIDs))
+	fmt.Printf("Fetching matchup for %s (%s) vs %d enemies...\n", championName, role, len(enemyChampionIDs))
+
+	patch := ""
+	if a.statsProvider != nil {
+		patch = a.statsProvider.GetPatch()
+	}
 
 	if len(enemyChampionIDs) == 0 {
 		runtime.EventsEmit(a.ctx, "build:update", map[string]interface{}{
@@ -297,14 +322,23 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 			"role":         role,
 			"winRate":      "-",
 			"winRateLabel": "Waiting for enemy...",
-			"patch":        a.uggFetcher.GetPatch(),
+			"patch":        patch,
 		})
 		fmt.Printf("No enemies detected yet for %s\n", championName)
 		return
 	}
 
-	// Fetch our matchups once - this gives us all enemies we face in our role
-	matchups, err := a.uggFetcher.FetchMatchups(championID, role)
+	if a.statsProvider == nil {
+		runtime.EventsEmit(a.ctx, "build:update", map[string]interface{}{
+			"hasBuild": false,
+			"error":    "Stats provider not available",
+		})
+		fmt.Println("Stats provider not available for matchups")
+		return
+	}
+
+	// Fetch our matchups - this gives us all enemies we face in our role
+	matchups, err := a.statsProvider.FetchAllMatchups(championID, role)
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "build:update", map[string]interface{}{
 			"hasBuild": false,
@@ -317,18 +351,18 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 	// Find enemy with highest game count in matchup data (likely lane opponent)
 	var laneOpponentID int
 	var matchupWR float64
-	var matchupGames float64
+	var matchupGames int
 	for _, enemyID := range enemyChampionIDs {
 		for _, m := range matchups {
-			if m.EnemyChampionID == enemyID && m.Games > matchupGames {
+			if m.EnemyChampionID == enemyID && m.Matches > matchupGames {
 				laneOpponentID = enemyID
 				matchupWR = m.WinRate
-				matchupGames = m.Games
+				matchupGames = m.Matches
 			}
 		}
 	}
 	if laneOpponentID > 0 {
-		fmt.Printf("Lane opponent (highest games): %d (%.1f%% WR, %.0f games)\n", laneOpponentID, matchupWR, matchupGames)
+		fmt.Printf("Lane opponent (highest games): %d (%.1f%% WR, %d games)\n", laneOpponentID, matchupWR, matchupGames)
 	}
 
 	if laneOpponentID == 0 {
@@ -338,7 +372,7 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 			"role":         role,
 			"winRate":      "-",
 			"winRateLabel": "No lane opponent found",
-			"patch":        a.uggFetcher.GetPatch(),
+			"patch":        patch,
 		})
 		fmt.Printf("No lane opponent found in matchup data for %s\n", championName)
 		return
@@ -356,7 +390,7 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 		matchupStatus = "even"
 	}
 
-	fmt.Printf("Matchup: %s vs %s = %.1f%% (%s, %.0f games)\n", championName, enemyName, matchupWR, matchupStatus, matchupGames)
+	fmt.Printf("Matchup: %s vs %s = %.1f%% (%s, %d games)\n", championName, enemyName, matchupWR, matchupStatus, matchupGames)
 	runtime.EventsEmit(a.ctx, "build:update", map[string]interface{}{
 		"hasBuild":      true,
 		"championName":  championName,
@@ -365,7 +399,7 @@ func (a *App) fetchAndEmitBuild(championID int, championName string, role string
 		"winRateLabel":  fmt.Sprintf("vs %s", enemyName),
 		"enemyName":     enemyName,
 		"matchupStatus": matchupStatus,
-		"patch":         a.uggFetcher.GetPatch(),
+		"patch":         patch,
 	})
 }
 
@@ -374,9 +408,22 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 	championName := a.champions.GetName(championID)
 	fmt.Printf("Fetching recommended bans for %s (%s)...\n", championName, role)
 
-	bans, err := a.uggFetcher.GetRecommendedBans(championID, role, 5)
-	if err != nil || len(bans) == 0 {
-		fmt.Printf("No matchup data for %s %s\n", championName, role)
+	// Use our stats provider for counter matchups
+	if a.statsProvider == nil {
+		fmt.Println("Stats provider not available for bans")
+		runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
+			"hasBans":      true,
+			"championName": championName,
+			"role":         role,
+			"bans":         []map[string]interface{}{},
+			"noData":       true,
+		})
+		return
+	}
+
+	matchups, err := a.statsProvider.FetchCounterMatchups(championID, role, 5)
+	if err != nil || len(matchups) == 0 {
+		fmt.Printf("No matchup data for %s %s: %v\n", championName, role, err)
 		runtime.EventsEmit(a.ctx, "bans:update", map[string]interface{}{
 			"hasBans":      true,
 			"championName": championName,
@@ -389,23 +436,23 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 
 	// Convert to frontend format
 	var banList []map[string]interface{}
-	for _, ban := range bans {
-		enemyName := a.champions.GetName(ban.EnemyChampionID)
+	for _, m := range matchups {
+		enemyName := a.champions.GetName(m.EnemyChampionID)
 		damageType := "Unknown"
 		if a.championDB != nil {
 			damageType = a.championDB.GetDamageType(enemyName)
 		}
 		banList = append(banList, map[string]interface{}{
-			"championID":   ban.EnemyChampionID,
+			"championID":   m.EnemyChampionID,
 			"championName": enemyName,
-			"iconURL":      a.champions.GetIconURL(ban.EnemyChampionID),
+			"iconURL":      a.champions.GetIconURL(m.EnemyChampionID),
 			"damageType":   damageType,
-			"winRate":      ban.WinRate,
-			"games":        ban.Games,
+			"winRate":      m.WinRate,
+			"games":        m.Matches,
 		})
 	}
 
-	fmt.Printf("Recommended bans for %s: ", championName)
+	fmt.Printf("Counter matchups for %s: ", championName)
 	for _, b := range banList {
 		fmt.Printf("%s (%.1f%%) ", b["championName"], b["winRate"])
 	}
@@ -419,13 +466,21 @@ func (a *App) fetchAndEmitRecommendedBans(championID int, role string) {
 	})
 }
 
-// fetchAndEmitItems fetches item build from U.GG and emits to frontend
+// fetchAndEmitItems fetches item build from our stats database and emits to frontend
 func (a *App) fetchAndEmitItems(championID int, championName string, role string) {
 	fmt.Printf("Fetching items for %s (%s)...\n", championName, role)
 
-	buildData, err := a.uggFetcher.FetchChampionData(championID, championName, role)
+	if a.statsProvider == nil {
+		fmt.Println("Stats provider not available")
+		runtime.EventsEmit(a.ctx, "items:update", map[string]interface{}{
+			"hasItems": false,
+		})
+		return
+	}
+
+	buildData, err := a.statsProvider.FetchChampionData(championID, championName, role)
 	if err != nil {
-		fmt.Printf("Failed to fetch item build: %v\n", err)
+		fmt.Printf("No data for %s: %v\n", championName, err)
 		runtime.EventsEmit(a.ctx, "items:update", map[string]interface{}{
 			"hasItems": false,
 		})
@@ -446,7 +501,7 @@ func (a *App) fetchAndEmitItems(championID int, championName string, role string
 	}
 
 	// Helper to convert item options with win rates
-	convertItemOptions := func(options []ugg.ItemOption) []map[string]interface{} {
+	convertItemOptions := func(options []stats.ItemOption) []map[string]interface{} {
 		var result []map[string]interface{}
 		for _, opt := range options {
 			result = append(result, map[string]interface{}{

@@ -133,6 +133,20 @@ type ItemStats struct {
 	Matches int
 }
 
+// MatchupStatsKey is the composite key for matchup stats
+type MatchupStatsKey struct {
+	Patch           string
+	ChampionID      int
+	TeamPosition    string
+	EnemyChampionID int
+}
+
+// MatchupStats holds aggregated matchup statistics
+type MatchupStats struct {
+	Wins    int
+	Matches int
+}
+
 func main() {
 	// Load .env
 	envPaths := []string{".env", "../.env", "../../.env", "data-analyzer/.env"}
@@ -229,6 +243,16 @@ func createTables(ctx context.Context, conn *pgx.Conn) error {
 			matches INT NOT NULL DEFAULT 0,
 			PRIMARY KEY (patch, champion_id, team_position, item_id)
 		);
+
+		CREATE TABLE IF NOT EXISTS champion_matchups (
+			patch VARCHAR(10) NOT NULL,
+			champion_id INT NOT NULL,
+			team_position VARCHAR(20) NOT NULL,
+			enemy_champion_id INT NOT NULL,
+			wins INT NOT NULL DEFAULT 0,
+			matches INT NOT NULL DEFAULT 0,
+			PRIMARY KEY (patch, champion_id, team_position, enemy_champion_id)
+		);
 	`
 	_, err := conn.Exec(ctx, schema)
 	return err
@@ -236,13 +260,13 @@ func createTables(ctx context.Context, conn *pgx.Conn) error {
 
 func processFile(ctx context.Context, conn *pgx.Conn, filePath, coldDir string) error {
 	// Aggregate stats from file
-	championStats, itemStats, err := aggregateFile(filePath)
+	championStats, itemStats, matchupStats, err := aggregateFile(filePath)
 	if err != nil {
 		return fmt.Errorf("aggregation failed: %w", err)
 	}
 
-	fmt.Printf("  Aggregated: %d champion stat buckets, %d item stat buckets\n",
-		len(championStats), len(itemStats))
+	fmt.Printf("  Aggregated: %d champion stats, %d item stats, %d matchup stats\n",
+		len(championStats), len(itemStats), len(matchupStats))
 
 	// Upsert to database in a transaction
 	tx, err := conn.Begin(ctx)
@@ -259,6 +283,10 @@ func processFile(ctx context.Context, conn *pgx.Conn, filePath, coldDir string) 
 		return fmt.Errorf("item stats upsert failed: %w", err)
 	}
 
+	if err := upsertMatchupStats(ctx, tx, matchupStats); err != nil {
+		return fmt.Errorf("matchup stats upsert failed: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("transaction commit failed: %w", err)
 	}
@@ -271,18 +299,21 @@ func processFile(ctx context.Context, conn *pgx.Conn, filePath, coldDir string) 
 	return nil
 }
 
-func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, error) {
+func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, map[MatchupStatsKey]*MatchupStats, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer file.Close()
 
 	championStats := make(map[ChampionStatsKey]*ChampionStats)
 	itemStats := make(map[ItemStatsKey]*ItemStats)
+	matchupStats := make(map[MatchupStatsKey]*MatchupStats)
+
+	// First pass: group all participants by matchId
+	matchParticipants := make(map[string][]RawMatch)
 
 	scanner := bufio.NewScanner(file)
-	// Increase buffer size for large lines
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	lineNum := 0
@@ -296,13 +327,13 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 			continue
 		}
 
-		// Normalize patch version (e.g., 14.23.448 -> 14.23)
-		patch := normalizePatch(match.GameVersion)
-
-		// Skip if no position (sometimes happens)
+		// Skip if no position
 		if match.TeamPosition == "" {
 			continue
 		}
+
+		// Normalize patch version
+		patch := normalizePatch(match.GameVersion)
 
 		// Aggregate champion stats
 		champKey := ChampionStatsKey{
@@ -319,12 +350,12 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 			championStats[champKey].Wins++
 		}
 
-		// Aggregate item stats (deduplicated within player inventory, completed items only)
+		// Aggregate item stats
 		items := deduplicateItems(match.Item0, match.Item1, match.Item2, match.Item3, match.Item4, match.Item5)
 
 		for _, itemID := range items {
 			if itemID == 0 || !isCompletedItem(itemID) {
-				continue // Skip empty slots and component items
+				continue
 			}
 
 			itemKey := ItemStatsKey{
@@ -342,14 +373,72 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 				itemStats[itemKey].Wins++
 			}
 		}
+
+		// Group by matchId for matchup calculation
+		matchParticipants[match.MatchID] = append(matchParticipants[match.MatchID], match)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	fmt.Printf("  Processed %d lines\n", lineNum)
-	return championStats, itemStats, nil
+	// Second pass: calculate matchups from grouped participants
+	for _, participants := range matchParticipants {
+		// Group by position
+		byPosition := make(map[string][]RawMatch)
+		for _, p := range participants {
+			byPosition[p.TeamPosition] = append(byPosition[p.TeamPosition], p)
+		}
+
+		// For each position, find the two opponents (one winner, one loser)
+		for _, posPlayers := range byPosition {
+			if len(posPlayers) != 2 {
+				continue // Skip if not exactly 2 players in this position
+			}
+
+			p1, p2 := posPlayers[0], posPlayers[1]
+
+			// They should be on opposite teams (one won, one lost)
+			if p1.Win == p2.Win {
+				continue // Same result = probably same team, skip
+			}
+
+			patch := normalizePatch(p1.GameVersion)
+
+			// Record matchup for p1 vs p2
+			key1 := MatchupStatsKey{
+				Patch:           patch,
+				ChampionID:      p1.ChampionID,
+				TeamPosition:    p1.TeamPosition,
+				EnemyChampionID: p2.ChampionID,
+			}
+			if _, exists := matchupStats[key1]; !exists {
+				matchupStats[key1] = &MatchupStats{}
+			}
+			matchupStats[key1].Matches++
+			if p1.Win {
+				matchupStats[key1].Wins++
+			}
+
+			// Record matchup for p2 vs p1
+			key2 := MatchupStatsKey{
+				Patch:           patch,
+				ChampionID:      p2.ChampionID,
+				TeamPosition:    p2.TeamPosition,
+				EnemyChampionID: p1.ChampionID,
+			}
+			if _, exists := matchupStats[key2]; !exists {
+				matchupStats[key2] = &MatchupStats{}
+			}
+			matchupStats[key2].Matches++
+			if p2.Win {
+				matchupStats[key2].Wins++
+			}
+		}
+	}
+
+	fmt.Printf("  Processed %d lines, %d unique matches\n", lineNum, len(matchParticipants))
+	return championStats, itemStats, matchupStats, nil
 }
 
 // normalizePatch truncates version to first two segments (e.g., 14.23.448 -> 14.23)
@@ -423,6 +512,36 @@ func upsertItemStats(ctx context.Context, tx pgx.Tx, stats map[ItemStatsKey]*Ite
 				wins = champion_items.wins + EXCLUDED.wins,
 				matches = champion_items.matches + EXCLUDED.matches
 		`, key.Patch, key.ChampionID, key.TeamPosition, key.ItemID, val.Wins, val.Matches)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for range stats {
+		if _, err := br.Exec(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func upsertMatchupStats(ctx context.Context, tx pgx.Tx, stats map[MatchupStatsKey]*MatchupStats) error {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+
+	for key, val := range stats {
+		batch.Queue(`
+			INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (patch, champion_id, team_position, enemy_champion_id)
+			DO UPDATE SET
+				wins = champion_matchups.wins + EXCLUDED.wins,
+				matches = champion_matchups.matches + EXCLUDED.matches
+		`, key.Patch, key.ChampionID, key.TeamPosition, key.EnemyChampionID, val.Wins, val.Matches)
 	}
 
 	br := tx.SendBatch(ctx, batch)
