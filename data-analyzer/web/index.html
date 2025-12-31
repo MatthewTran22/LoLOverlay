@@ -5,6 +5,89 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LoL Match Data Analyzer</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            cursor: pointer;
+            color: #888;
+        }
+        .tab.active {
+            background: #c89b3c;
+            color: #000;
+            border-color: #c89b3c;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        .filters select {
+            padding: 8px 12px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            color: #fff;
+            border-radius: 4px;
+        }
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .overview-card {
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .overview-card .value {
+            font-size: 2rem;
+            color: #c89b3c;
+            font-weight: bold;
+        }
+        .overview-card .label {
+            color: #888;
+            font-size: 0.85rem;
+            margin-top: 5px;
+        }
+        .clickable-row {
+            cursor: pointer;
+        }
+        .clickable-row:hover {
+            background: #252540;
+        }
+        .item-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        .back-btn {
+            color: #c89b3c;
+            cursor: pointer;
+            margin-bottom: 15px;
+            display: inline-block;
+        }
+        .back-btn:hover {
+            text-decoration: underline;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -13,39 +96,274 @@
             <div class="stats" id="stats">Loading...</div>
         </header>
 
-        <section class="card">
-            <h2>Champion Statistics</h2>
-            <table id="champions-table">
-                <thead>
-                    <tr>
-                        <th>Champion</th>
-                        <th>Games</th>
-                        <th>Wins</th>
-                        <th>Win Rate</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-        </section>
+        <div class="tabs">
+            <div class="tab active" data-tab="aggregated">Aggregated Stats</div>
+            <div class="tab" data-tab="raw">Raw Data</div>
+        </div>
 
-        <section class="card">
-            <h2>Recent Matches</h2>
-            <table id="matches-table">
-                <thead>
-                    <tr>
-                        <th>Match ID</th>
-                        <th>Patch</th>
-                        <th>Duration</th>
-                        <th>Date</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-        </section>
+        <!-- Aggregated Stats Tab -->
+        <div id="aggregated" class="tab-content active">
+            <div class="overview-grid" id="overview-grid">
+                <div class="overview-card">
+                    <div class="value" id="agg-matches">-</div>
+                    <div class="label">Matches Processed</div>
+                </div>
+                <div class="overview-card">
+                    <div class="value" id="agg-champions">-</div>
+                    <div class="label">Champions</div>
+                </div>
+                <div class="overview-card">
+                    <div class="value" id="agg-patches">-</div>
+                    <div class="label">Patches</div>
+                </div>
+                <div class="overview-card">
+                    <div class="value" id="agg-items">-</div>
+                    <div class="label">Item Stats</div>
+                </div>
+            </div>
+
+            <section class="card" id="champion-list-section">
+                <h2>Champion Stats (Aggregated)</h2>
+                <div class="filters">
+                    <label>Patch: <select id="patch-filter"><option value="">All</option></select></label>
+                    <label>Position:
+                        <select id="position-filter">
+                            <option value="">All</option>
+                            <option value="TOP">Top</option>
+                            <option value="JUNGLE">Jungle</option>
+                            <option value="MIDDLE">Mid</option>
+                            <option value="BOTTOM">ADC</option>
+                            <option value="UTILITY">Support</option>
+                        </select>
+                    </label>
+                </div>
+                <table id="agg-champions-table">
+                    <thead>
+                        <tr>
+                            <th>Champion</th>
+                            <th>Position</th>
+                            <th>Patch</th>
+                            <th>Games</th>
+                            <th>Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+
+            <section class="card" id="item-stats-section" style="display: none;">
+                <span class="back-btn" onclick="showChampionList()">&larr; Back to Champions</span>
+                <h2 id="item-stats-title">Item Stats</h2>
+                <table id="item-stats-table">
+                    <thead>
+                        <tr>
+                            <th>Item</th>
+                            <th>Pick Rate</th>
+                            <th>Games</th>
+                            <th>Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+        </div>
+
+        <!-- Raw Data Tab -->
+        <div id="raw" class="tab-content">
+            <section class="card">
+                <h2>Champion Statistics (Raw)</h2>
+                <table id="champions-table">
+                    <thead>
+                        <tr>
+                            <th>Champion</th>
+                            <th>Games</th>
+                            <th>Wins</th>
+                            <th>Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <h2>Recent Matches</h2>
+                <table id="matches-table">
+                    <thead>
+                        <tr>
+                            <th>Match ID</th>
+                            <th>Patch</th>
+                            <th>Duration</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </section>
+        </div>
     </div>
 
     <script>
-        async function loadData() {
+        const DDRAGON_VERSION = '14.24.1';
+        let championData = {};
+        let itemData = {};
+
+        // Load Data Dragon data
+        async function loadDDragon() {
+            try {
+                const champRes = await fetch(`https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US/champion.json`);
+                const champJson = await champRes.json();
+                // Build ID -> name mapping
+                for (const [name, data] of Object.entries(champJson.data)) {
+                    championData[data.key] = { name: data.name, id: name };
+                }
+
+                const itemRes = await fetch(`https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US/item.json`);
+                const itemJson = await itemRes.json();
+                itemData = itemJson.data;
+            } catch (e) {
+                console.error('Failed to load DDragon:', e);
+            }
+        }
+
+        function getChampionName(id) {
+            return championData[id]?.name || `Champion ${id}`;
+        }
+
+        function getChampionIcon(id) {
+            const champId = championData[id]?.id || id;
+            return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champId}.png`;
+        }
+
+        function getItemName(id) {
+            return itemData[id]?.name || `Item ${id}`;
+        }
+
+        function getItemIcon(id) {
+            return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/item/${id}.png`;
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        async function loadAggregatedOverview() {
+            try {
+                const res = await fetch('/api/aggregated/overview');
+                const data = await res.json();
+                document.getElementById('agg-matches').textContent = (data.totalMatchesAggregated || 0).toLocaleString();
+                document.getElementById('agg-champions').textContent = data.uniqueChampions || 0;
+                document.getElementById('agg-patches').textContent = data.patches || 0;
+                document.getElementById('agg-items').textContent = (data.itemStatEntries || 0).toLocaleString();
+            } catch (e) {
+                console.error('Error loading overview:', e);
+            }
+        }
+
+        async function loadPatches() {
+            try {
+                const res = await fetch('/api/aggregated/patches');
+                const patches = await res.json();
+                const select = document.getElementById('patch-filter');
+                if (patches && patches.length > 0) {
+                    patches.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p;
+                        opt.textContent = p;
+                        select.appendChild(opt);
+                    });
+                }
+            } catch (e) {
+                console.error('Error loading patches:', e);
+            }
+        }
+
+        async function loadAggregatedChampions() {
+            const patch = document.getElementById('patch-filter').value;
+            const position = document.getElementById('position-filter').value;
+
+            try {
+                const res = await fetch(`/api/aggregated/champions?patch=${patch}`);
+                let stats = await res.json();
+                const tbody = document.querySelector('#agg-champions-table tbody');
+                tbody.innerHTML = '';
+
+                if (!stats || stats.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5">No aggregated data. Run the reducer first.</td></tr>';
+                    return;
+                }
+
+                // Filter by position if selected
+                if (position) {
+                    stats = stats.filter(s => s.teamPosition === position);
+                }
+
+                // Sort by games descending
+                stats.sort((a, b) => b.matches - a.matches);
+
+                stats.slice(0, 100).forEach(stat => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'clickable-row';
+                    tr.onclick = () => showItemStats(stat.patch, stat.championId, stat.teamPosition);
+                    const wrClass = stat.winRate >= 52 ? 'win' : stat.winRate <= 48 ? 'loss' : '';
+                    tr.innerHTML = `
+                        <td><img src="${getChampionIcon(stat.championId)}" style="width:24px;height:24px;border-radius:50%;vertical-align:middle;margin-right:8px">${getChampionName(stat.championId)}</td>
+                        <td>${stat.teamPosition}</td>
+                        <td>${stat.patch}</td>
+                        <td>${stat.matches.toLocaleString()}</td>
+                        <td class="${wrClass}">${stat.winRate.toFixed(1)}%</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                console.error('Error loading aggregated champions:', e);
+            }
+        }
+
+        async function showItemStats(patch, championId, position) {
+            document.getElementById('champion-list-section').style.display = 'none';
+            document.getElementById('item-stats-section').style.display = 'block';
+            document.getElementById('item-stats-title').textContent =
+                `${getChampionName(championId)} ${position} - Patch ${patch} - Item Stats`;
+
+            try {
+                const res = await fetch(`/api/aggregated/items?patch=${patch}&champion=${championId}&position=${position}`);
+                const stats = await res.json();
+                const tbody = document.querySelector('#item-stats-table tbody');
+                tbody.innerHTML = '';
+
+                if (!stats || stats.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4">No item data for this champion.</td></tr>';
+                    return;
+                }
+
+                stats.forEach(stat => {
+                    const tr = document.createElement('tr');
+                    const wrClass = stat.winRate >= 52 ? 'win' : stat.winRate <= 48 ? 'loss' : '';
+                    tr.innerHTML = `
+                        <td><img class="item-icon" src="${getItemIcon(stat.itemId)}" onerror="this.style.display='none'">${getItemName(stat.itemId)}</td>
+                        <td>${stat.pickRate.toFixed(1)}%</td>
+                        <td>${stat.matches.toLocaleString()}</td>
+                        <td class="${wrClass}">${stat.winRate.toFixed(1)}%</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                console.error('Error loading item stats:', e);
+            }
+        }
+
+        function showChampionList() {
+            document.getElementById('champion-list-section').style.display = 'block';
+            document.getElementById('item-stats-section').style.display = 'none';
+        }
+
+        async function loadRawData() {
             // Load stats
             try {
                 const statsRes = await fetch('/api/stats');
@@ -114,7 +432,20 @@
             }
         }
 
-        loadData();
+        // Filter change handlers
+        document.getElementById('patch-filter').addEventListener('change', loadAggregatedChampions);
+        document.getElementById('position-filter').addEventListener('change', loadAggregatedChampions);
+
+        // Initialize
+        async function init() {
+            await loadDDragon();
+            loadAggregatedOverview();
+            loadPatches();
+            loadAggregatedChampions();
+            loadRawData();
+        }
+
+        init();
     </script>
 </body>
 </html>

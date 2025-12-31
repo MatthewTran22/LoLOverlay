@@ -17,8 +17,17 @@ import (
 var database *db.DB
 
 func main() {
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
+	// Load .env file - try multiple locations
+	envPaths := []string{".env", "../.env", "../../.env", "data-analyzer/.env"}
+	envLoaded := false
+	for _, path := range envPaths {
+		if err := godotenv.Load(path); err == nil {
+			fmt.Printf("Loaded .env from: %s\n", path)
+			envLoaded = true
+			break
+		}
+	}
+	if !envLoaded {
 		log.Println("No .env file found, using environment variables")
 	}
 
@@ -38,8 +47,23 @@ func main() {
 	http.HandleFunc("/api/match/", handleMatchDetail)
 	http.HandleFunc("/api/champions", handleChampions)
 
-	// Static files
-	http.Handle("/", http.FileServer(http.Dir("web")))
+	// Aggregated stats routes (from reducer)
+	http.HandleFunc("/api/aggregated/overview", handleAggregatedOverview)
+	http.HandleFunc("/api/aggregated/patches", handlePatches)
+	http.HandleFunc("/api/aggregated/champions", handleAggregatedChampions)
+	http.HandleFunc("/api/aggregated/items", handleAggregatedItems)
+
+	// Static files - try multiple paths
+	webDir := "web"
+	webPaths := []string{"web", "../web", "../../web", "data-analyzer/web"}
+	for _, p := range webPaths {
+		if _, err := os.Stat(p); err == nil {
+			webDir = p
+			break
+		}
+	}
+	fmt.Printf("Serving static files from: %s\n", webDir)
+	http.Handle("/", http.FileServer(http.Dir(webDir)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -116,4 +140,68 @@ func handleMatchDetail(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(match)
+}
+
+func handleAggregatedOverview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	overview, err := database.GetStatsOverview(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(overview)
+}
+
+func handlePatches(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	patches, err := database.GetPatches(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(patches)
+}
+
+func handleAggregatedChampions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	patch := r.URL.Query().Get("patch")
+
+	stats, err := database.GetAggregatedChampionStats(ctx, patch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func handleAggregatedItems(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	patch := r.URL.Query().Get("patch")
+	championID := r.URL.Query().Get("champion")
+	position := r.URL.Query().Get("position")
+
+	if patch == "" || championID == "" || position == "" {
+		http.Error(w, "patch, champion, and position query params required", http.StatusBadRequest)
+		return
+	}
+
+	var champID int
+	fmt.Sscanf(championID, "%d", &champID)
+
+	stats, err := database.GetAggregatedItemStats(ctx, patch, champID, position)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }

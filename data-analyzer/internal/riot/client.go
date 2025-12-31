@@ -6,28 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 )
 
 const (
 	// API base URLs
 	americasBaseURL = "https://americas.api.riotgames.com"
-
-	// Rate limits for dev key (using conservative values to be safe)
-	requestsPerSecond = 15  // Actual: 20, using 15 for safety
-	requestsPer2Min   = 90  // Actual: 100, using 90 for safety
 )
 
-// Client is a rate-limited Riot API client
+// Client is a Riot API client that handles 429 rate limit responses
 type Client struct {
 	apiKey     string
 	httpClient *http.Client
-
-	// Rate limiting
-	mu             sync.Mutex
-	shortWindow    []time.Time // Requests in last second
-	longWindow     []time.Time // Requests in last 2 minutes
 }
 
 // NewClient creates a new Riot API client
@@ -51,71 +41,13 @@ func NewClient() (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		shortWindow: make([]time.Time, 0),
-		longWindow:  make([]time.Time, 0),
 	}, nil
 }
 
-// waitForRateLimit blocks until we can make another request
-func (c *Client) waitForRateLimit() {
-	for {
-		c.mu.Lock()
-
-		now := time.Now()
-
-		// Debug: show current state
-		fmt.Printf("      [Rate check] Short: %d/%d, Long: %d/%d\n",
-			len(c.shortWindow), requestsPerSecond, len(c.longWindow), requestsPer2Min)
-
-		// Clean up old entries
-		oneSecondAgo := now.Add(-1 * time.Second)
-		twoMinutesAgo := now.Add(-2 * time.Minute)
-
-		// Filter short window
-		newShort := make([]time.Time, 0)
-		for _, t := range c.shortWindow {
-			if t.After(oneSecondAgo) {
-				newShort = append(newShort, t)
-			}
-		}
-		c.shortWindow = newShort
-
-		// Filter long window
-		newLong := make([]time.Time, 0)
-		for _, t := range c.longWindow {
-			if t.After(twoMinutesAgo) {
-				newLong = append(newLong, t)
-			}
-		}
-		c.longWindow = newLong
-
-		// Check if we need to wait for short window
-		if len(c.shortWindow) >= requestsPerSecond {
-			c.mu.Unlock()
-			fmt.Printf("      [Rate limit] %d req/sec, waiting 30s...\n", len(c.shortWindow))
-			time.Sleep(30 * time.Second)
-			continue // Re-check after waiting
-		}
-
-		// Check if we need to wait for long window
-		if len(c.longWindow) >= requestsPer2Min {
-			c.mu.Unlock()
-			fmt.Printf("      [Rate limit] %d req/2min, waiting 30s...\n", len(c.longWindow))
-			time.Sleep(30 * time.Second)
-			continue // Re-check after waiting
-		}
-
-		// Record this request and exit loop
-		c.shortWindow = append(c.shortWindow, time.Now())
-		c.longWindow = append(c.longWindow, time.Now())
-		c.mu.Unlock()
-		return
-	}
-}
-
-// doRequest makes a rate-limited request
+// doRequest makes a request and handles 429 rate limit responses
 func (c *Client) doRequest(ctx context.Context, url string, result interface{}) error {
-	c.waitForRateLimit()
+	// Sleep to stay under 100 requests/2min rate limit (~1.2s between requests)
+	time.Sleep(1300 * time.Millisecond)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

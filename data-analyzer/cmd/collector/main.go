@@ -7,11 +7,14 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"data-analyzer/internal/db"
 	"data-analyzer/internal/riot"
+	"data-analyzer/internal/storage"
 
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/joho/godotenv"
 )
 
@@ -37,24 +40,54 @@ func main() {
 	maxPlayers := flag.Int("max-players", 100, "Maximum unique players to collect")
 	flag.Parse()
 
+	// Get blob storage path from env (required)
+	dataDir := os.Getenv("BLOB_STORAGE_PATH")
+	if dataDir == "" {
+		log.Fatal("BLOB_STORAGE_PATH environment variable not set")
+	}
+	// Remove quotes if present (from .env parsing)
+	dataDir = strings.Trim(dataDir, "\"")
+	fmt.Printf("Using storage path: %s\n", dataDir)
+
 	if *riotID == "" && *puuid == "" {
 		fmt.Println("Usage:")
-		fmt.Println("  collector --riot-id='Player#NA1' [--count=20] [--max-players=20]")
-		fmt.Println("  collector --puuid=PUUID [--count=20] [--max-players=20]")
+		fmt.Println("  collector --riot-id='Player#NA1' [--count=20] [--max-players=100]")
+		fmt.Println("  collector --puuid=PUUID [--count=20] [--max-players=100]")
+		fmt.Println()
+		fmt.Println("Storage path is set via BLOB_STORAGE_PATH in .env")
 		fmt.Println()
 		fmt.Println("This will collect matches from the starting player, then snowball")
 		fmt.Println("to collect matches from other players found in those matches.")
+		fmt.Println()
+		fmt.Println("Data is written to rotating JSONL files in:")
+		fmt.Println("  hot/   - Active writes")
+		fmt.Println("  warm/  - Closed files awaiting processing")
+		fmt.Println("  cold/  - Compressed archives")
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Connect to database
-	database, err := db.New(ctx)
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n[Shutdown] Gracefully shutting down...")
+		cancel()
+	}()
+
+	// Create file rotator
+	rotator, err := storage.NewFileRotator(dataDir)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to create file rotator: %v", err)
 	}
-	defer database.Close()
+	defer func() {
+		if err := rotator.Close(); err != nil {
+			log.Printf("Error closing rotator: %v", err)
+		}
+	}()
 
 	// Create Riot API client
 	client, err := riot.NewClient()
@@ -84,24 +117,32 @@ func main() {
 		startingPUUID = *puuid
 	}
 
+	// Bloom filters for deduplication (space-efficient for large datasets)
+	// Sized for 500k matches and 1M players with 0.1% false positive rate
+	visitedMatches := bloom.NewWithEstimates(500000, 0.001)
+	visitedPUUIDs := bloom.NewWithEstimates(1000000, 0.001)
+
 	// Queue of PUUIDs to process
 	queue := []string{startingPUUID}
-	processed := make(map[string]bool)
-	discovered := make(map[string]bool)
-	discovered[startingPUUID] = true
+	visitedPUUIDs.AddString(startingPUUID)
 
 	playerCount := 0
+	totalMatchesWritten := 0
 
 	// Process queue
 	for len(queue) > 0 && playerCount < *maxPlayers {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			fmt.Println("[Shutdown] Stopping collection...")
+			goto shutdown
+		default:
+		}
+
 		// Pop from queue
 		currentPUUID := queue[0]
 		queue = queue[1:]
 
-		if processed[currentPUUID] {
-			continue
-		}
-		processed[currentPUUID] = true
 		playerCount++
 
 		fmt.Printf("\n[Player %d/%d] Processing: %s\n", playerCount, *maxPlayers, currentPUUID[:20]+"...")
@@ -115,17 +156,22 @@ func main() {
 		fmt.Printf("  Found %d matches\n", len(matchIDs))
 
 		// Process each match
+		matchesThisPlayer := 0
 		for j, matchID := range matchIDs {
-			// Check if match already exists
-			exists, err := database.MatchExists(ctx, matchID)
-			if err != nil {
-				log.Printf("  Error checking match: %v", err)
+			// Check for cancellation
+			select {
+			case <-ctx.Done():
+				fmt.Println("[Shutdown] Stopping collection...")
+				goto shutdown
+			default:
+			}
+
+			// Bloom filter deduplication check
+			if visitedMatches.TestString(matchID) {
+				fmt.Printf("  [%d/%d] Match %s already visited, skipping\n", j+1, len(matchIDs), matchID)
 				continue
 			}
-			if exists {
-				fmt.Printf("  [%d/%d] Match %s already exists, skipping\n", j+1, len(matchIDs), matchID)
-				continue
-			}
+			visitedMatches.AddString(matchID)
 
 			fmt.Printf("  [%d/%d] Fetching match %s...\n", j+1, len(matchIDs), matchID)
 
@@ -143,27 +189,18 @@ func main() {
 				continue
 			}
 
-			// Insert match
-			dbMatch := &db.Match{
-				MatchID:      matchID,
-				GameVersion:  match.Info.GameVersion,
-				GameDuration: match.Info.GameDuration,
-				GameCreation: match.Info.GameCreation,
-			}
-			if err := database.InsertMatch(ctx, dbMatch); err != nil {
-				log.Printf("    Failed to insert match: %v", err)
-				continue
-			}
-
-			// Insert participants and discover new players
+			// Write each participant as a separate record
 			for pIdx, participant := range match.Info.Participants {
 				participantID := pIdx + 1 // Participant IDs are 1-indexed in timeline
 
 				// Extract build order from timeline
 				buildOrder := riot.ExtractBuildOrder(timeline, participantID)
 
-				dbParticipant := &db.Participant{
+				rawMatch := &storage.RawMatch{
 					MatchID:      matchID,
+					GameVersion:  match.Info.GameVersion,
+					GameDuration: match.Info.GameDuration,
+					GameCreation: match.Info.GameCreation,
 					PUUID:        participant.PUUID,
 					GameName:     participant.RiotIdGameName,
 					TagLine:      participant.RiotIdTagline,
@@ -179,28 +216,41 @@ func main() {
 					Item5:        participant.Item5,
 					BuildOrder:   buildOrder,
 				}
-				if err := database.InsertParticipant(ctx, dbParticipant); err != nil {
-					log.Printf("    Failed to insert participant: %v", err)
+
+				if err := rotator.WriteLine(rawMatch); err != nil {
+					log.Printf("    Failed to write record: %v", err)
+					continue
 				}
 
 				// Add new players to queue
-				if !discovered[participant.PUUID] {
-					discovered[participant.PUUID] = true
+				if !visitedPUUIDs.TestString(participant.PUUID) {
+					visitedPUUIDs.AddString(participant.PUUID)
 					queue = append(queue, participant.PUUID)
 				}
 			}
 
+			// Signal match complete (increments counter, may trigger rotation)
+			if err := rotator.MatchComplete(); err != nil {
+				log.Printf("    Failed to complete match: %v", err)
+			}
+
+			matchesThisPlayer++
+			totalMatchesWritten++
 			fmt.Printf("    Saved match with %d participants\n", len(match.Info.Participants))
 		}
 
-		fmt.Printf("  Queue size: %d, Discovered: %d\n", len(queue), len(discovered))
+		// Show stats
+		matchesInFile, currentFileName := rotator.Stats()
+		fmt.Printf("  Matches this player: %d, Total written: %d\n", matchesThisPlayer, totalMatchesWritten)
+		fmt.Printf("  Current file: %s (%d matches)\n", currentFileName, matchesInFile)
+		fmt.Printf("  Queue size: %d\n", len(queue))
 	}
 
+shutdown:
 	// Print summary
-	matchCount2, _ := database.GetMatchCount(ctx)
-	participantCount, _ := database.GetParticipantCount(ctx)
 	fmt.Printf("\n=== Collection Complete ===\n")
 	fmt.Printf("Players processed: %d\n", playerCount)
-	fmt.Printf("Total matches in database: %d\n", matchCount2)
-	fmt.Printf("Total participants: %d\n", participantCount)
+	fmt.Printf("Matches written: %d\n", totalMatchesWritten)
+	fmt.Printf("Total records (participants): %d\n", totalMatchesWritten*10)
+	fmt.Printf("Remaining queue: %d\n", len(queue))
 }
