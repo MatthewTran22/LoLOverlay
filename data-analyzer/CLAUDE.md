@@ -1,53 +1,66 @@
-# Data Analyzer - Match History Collection
+# Data Analyzer - Match History Collection & Aggregation
 
 ## Purpose
-Collect match history data from Riot API to build our own item statistics instead of relying on U.GG.
+Collect match history data from Riot API and aggregate into PostgreSQL for the main GhostDraft overlay to use instead of external APIs.
 
-## Architecture: Rotated JSONL + Incremental Reducer
+## Architecture
 
 ```
-Riot API → Spider Loop → FileRotator → JSONL files
-                              ↓
-                         hot/ → warm/ → cold/
+Riot API → Collector (spider) → JSONL files → Reducer → PostgreSQL
+                                    ↓
+                              hot/ → warm/ → cold/
 ```
 
-### Storage Lifecycle
-- **hot/** - Active writes (current JSONL file)
-- **warm/** - Closed files awaiting processing
-- **cold/** - Compressed archives (.jsonl.gz)
-
-### File Rotation Triggers
-- 1,000 matches (10,000 participant records) per file
-- 1 hour max file age
-- Graceful shutdown
+### Components
+1. **Collector** - Spider that crawls match history from Riot API
+2. **Reducer** - Processes JSONL files into aggregated PostgreSQL tables
+3. **Server** - Web UI for viewing collected data (optional)
 
 ## Quick Start
 
 ```bash
-# Collect data (writes to ./data by default)
+# 1. Start PostgreSQL
+docker-compose up -d
+
+# 2. Collect match data (spider from a starting player)
 go run cmd/collector/main.go --riot-id="Player#NA1"
 
-# Custom data directory
-go run cmd/collector/main.go --riot-id="Player#NA1" --data-dir="/path/to/data"
+# 3. Process collected data into aggregated stats
+go run cmd/reducer/main.go
 
-# Options
-#   --count=20         Matches per player (default: 20)
-#   --max-players=100  Max players to process (default: 100)
-#   --data-dir=./data  Base directory for hot/warm/cold storage
+# 4. (Optional) View data in web UI
+go run cmd/server/main.go
+# Open http://localhost:8080
 ```
 
 ## Environment Variables
 Create `.env` file:
 ```
 RIOT_API_KEY=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+BLOB_STORAGE_PATH=./data
+DATABASE_URL=postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable
 ```
+
+## Storage Lifecycle
+- **hot/** - Active writes (current JSONL file being written)
+- **warm/** - Closed files awaiting reducer processing
+- **cold/** - Compressed archives (.jsonl.gz) after processing
+
+### File Rotation Triggers
+- 1,000 matches (10,000 participant records) per file
+- 1 hour max file age
+- Graceful shutdown (Ctrl+C flushes to warm/)
 
 ## Project Structure
 ```
 data-analyzer/
 ├── cmd/
 │   ├── collector/       # Spider crawler CLI
-│   └── server/          # Web UI server (legacy, uses PostgreSQL)
+│   │   └── main.go
+│   ├── reducer/         # JSONL → PostgreSQL aggregator
+│   │   └── main.go
+│   └── server/          # Web UI server
+│       └── main.go
 ├── internal/
 │   ├── riot/            # Riot API client
 │   │   ├── client.go    # HTTP client with rate limiting
@@ -55,13 +68,59 @@ data-analyzer/
 │   ├── storage/         # JSONL file rotation
 │   │   ├── rotator.go   # FileRotator implementation
 │   │   └── types.go     # RawMatch struct
-│   └── db/              # PostgreSQL layer (legacy)
-└── web/                 # Static HTML/CSS
+│   └── db/              # PostgreSQL queries
+│       ├── db.go        # Connection pool
+│       └── queries*.go  # Query functions
+├── web/                 # Static HTML/CSS for server
+└── docker-compose.yml   # PostgreSQL container
 ```
 
-## Data Format
+## Database Schema
 
-### JSONL Records (one per participant)
+```sql
+-- Champion overall stats
+CREATE TABLE champion_stats (
+    patch VARCHAR(10),
+    champion_id INT,
+    team_position VARCHAR(20),  -- TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY
+    wins INT,
+    matches INT,
+    PRIMARY KEY (patch, champion_id, team_position)
+);
+
+-- Item stats per champion
+CREATE TABLE champion_items (
+    patch VARCHAR(10),
+    champion_id INT,
+    team_position VARCHAR(20),
+    item_id INT,
+    wins INT,
+    matches INT,
+    PRIMARY KEY (patch, champion_id, team_position, item_id)
+);
+
+-- Matchup stats (champion vs enemy)
+CREATE TABLE champion_matchups (
+    patch VARCHAR(10),
+    champion_id INT,
+    team_position VARCHAR(20),
+    enemy_champion_id INT,
+    wins INT,
+    matches INT,
+    PRIMARY KEY (patch, champion_id, team_position, enemy_champion_id)
+);
+```
+
+## Reducer Features
+
+- **Patch normalization**: `14.24.448` → `14.24`
+- **Item deduplication**: Only counts unique items per player inventory
+- **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
+- **Matchup calculation**: Groups participants by matchId to find lane opponents
+- **Upsert logic**: Incremental updates with `ON CONFLICT DO UPDATE`
+- **Archiving**: Compresses processed files to cold/ with gzip
+
+## JSONL Record Format
 ```json
 {
   "matchId": "NA1_12345678",
@@ -82,28 +141,41 @@ data-analyzer/
 
 ## Collection Strategy
 
-1. **Spider/Snowball approach**: Start with 1 player, discover others from matches
+1. **Spider/Snowball approach**: Start with 1 player, discover others from their matches
 2. **In-memory deduplication**: Track visitedMatchIDs to avoid re-fetching
-3. **Rate limiting**: 15 req/sec, 90 req/2min (conservative under 20/100 limits)
+3. **Rate limiting**: 15 req/sec, 90 req/2min (conservative under Riot's 20/100 limits)
 4. **Graceful shutdown**: Ctrl+C flushes current file to warm/
+
+## Collector Options
+```bash
+go run cmd/collector/main.go \
+  --riot-id="Player#NA1" \  # Starting player
+  --count=20 \              # Matches per player (default: 20)
+  --max-players=100 \       # Max players to spider (default: 100)
+  --data-dir=./data         # Storage directory
+```
 
 ## Riot API Endpoints Used
 
 1. **Account Lookup**: `/riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}`
 2. **Match History**: `/lol/match/v5/matches/by-puuid/{puuid}/ids?queue=420&count=20`
 3. **Match Details**: `/lol/match/v5/matches/{matchId}`
-4. **Match Timeline**: `/lol/match/v5/matches/{matchId}/timeline`
 
 ## Rate Limits (Dev Key)
 - 20 requests/second
 - 100 requests/2 minutes
-- 30-second wait on 429 responses
+- Collector waits 30 seconds on 429 responses
 
-## Future: Batch Reducer
+## Web Server API Endpoints
 
-The reducer will process warm/ files to compute aggregated stats:
-- Champion win rates by position
-- Common build paths
-- Item synergies
+### Raw Data
+- `GET /api/stats` - Match/participant counts
+- `GET /api/matches` - Recent matches list
+- `GET /api/match/{id}` - Match details
+- `GET /api/champions` - Champion stats from raw data
 
-This allows re-running analysis without re-fetching from Riot API.
+### Aggregated Data
+- `GET /api/aggregated/overview` - Summary stats
+- `GET /api/aggregated/patches` - Available patches
+- `GET /api/aggregated/champions?patch=X` - Champion stats by patch
+- `GET /api/aggregated/items?patch=X&champion=Y&position=Z` - Item stats

@@ -5,7 +5,7 @@ A Wails-based League of Legends overlay that provides real-time champion select 
 ## Tech Stack
 - **Backend**: Go with Wails v2
 - **Frontend**: Vanilla JavaScript (no framework)
-- **Data Sources**: Riot LCU API, U.GG API, Data Dragon
+- **Data Sources**: Riot LCU API, PostgreSQL (own match data), Data Dragon
 
 ## Project Structure
 
@@ -23,13 +23,11 @@ A Wails-based League of Legends overlay that provides real-time champion select 
 │   │   ├── champions.go   # ChampionRegistry - ID→name/icon from Data Dragon
 │   │   ├── items.go       # ItemRegistry - ID→name/icon from Data Dragon
 │   │   └── types.go       # LCU data structures
-│   ├── ugg/
-│   │   ├── fetcher.go     # U.GG API client, patch fetching
-│   │   ├── champion.go    # FetchChampionData - builds/items from overview endpoint
-│   │   ├── matchup.go     # FetchMatchups - win rates vs enemies
-│   │   └── types.go       # BuildData, MatchupData structs
+│   ├── stats/
+│   │   └── provider.go    # PostgreSQL queries for builds, matchups, counters
 │   └── data/
 │       └── champions.go   # SQLite DB for static champion data (damage types, tags)
+├── data-analyzer/         # Separate module for collecting match data
 ```
 
 ## Key Data Flows
@@ -42,20 +40,19 @@ LCU WebSocket → websocket.go:handleChampSelectEvent
              → Frontend listeners update DOM
 ```
 
-### 2. U.GG API Endpoints
-- **Overview** (`/overview/`): Champion builds, items, runes, win rates
-  - Structure: `region → role → tier → [statsArray]`
-  - statsData[2] = starting items `[wins, games, [itemIds]]`
-  - statsData[3] = core items `[wins, games, [itemIds]]`
-  - statsData[5] = situational items per slot:
-    - Slot 0: 4th item options `[[itemId, wins, games], ...]`
-    - Slot 1: 5th item options
-    - Slot 2: 6th item options
-    - Slot 3: consumables (ignored)
+### 2. Stats Provider (PostgreSQL)
+The `internal/stats/provider.go` queries our own match data:
+- **FetchChampionData**: Item builds with win rates and pick rates
+- **FetchAllMatchups**: All matchup win rates for a champion
+- **FetchCounterMatchups**: Top N counters (lowest win rate matchups)
+- **FetchMatchup**: Specific champion vs enemy win rate
 
-- **Matchups** (`/matchups/`): Win rates vs specific enemies
-  - Structure: `region → tier → role → [[enemyId, wins, games, ...]]`
-  - Note: Different nesting order than overview!
+### Database Tables (managed by data-analyzer/reducer)
+```sql
+champion_stats    -- Champion win rates by patch/position
+champion_items    -- Item stats per champion/position
+champion_matchups -- Matchup win rates between champions
+```
 
 ### 3. Frontend Events
 ```javascript
@@ -69,43 +66,36 @@ EventsOn('fullcomp:update', updateFullComp);
 ```
 
 ## UI Tabs
-1. **Matchup** - Recommended bans, win rate vs lane opponent
-2. **Build** - Starting items, core items
+1. **Matchup** - Counter matchups (champions with lowest WR against you), live matchup WR vs lane opponent
+2. **Build** - Core items, situational items with win rates
 3. **Team Comp** - Team archetype analysis (when all locked in)
 
 ## Important Implementation Notes
 
-### U.GG API Parsing
-- Overview and Matchups endpoints have DIFFERENT nesting structures
-- Overview: `region → role → tier`
-- Matchups: `region → tier → role`
-- Don't change one to match the other - they're intentionally different
+### Stats Provider
+- Connects to PostgreSQL at `DATABASE_URL` env var or default localhost
+- Fetches current patch from database on startup
+- Falls back to aggregated data across patches if current patch has no data
 
-### Item Parsing
-Items in statsData are structured as `[wins, games, [itemId1, itemId2, ...]]`
-- Index 0: wins
-- Index 1: games
-- Index 2: array of item IDs
+### Item Filtering
+- Only shows "completed" items (not components)
+- Uses Data Dragon to identify items with no "into" field and cost >= 1000g
 
 ### Caching Keys
 - `lastFetchedChamp` - prevents refetching same champion
 - `lastBanFetchKey` - `"{champId}-{role}"` for bans
 - `lastItemFetchKey` - `"{champId}-{role}"` for items
 
-### Role IDs (U.GG)
-```
-"1" = jungle
-"2" = support/utility
-"3" = bottom/adc
-"4" = top
-"5" = middle
-```
-
 ## SQLite Database
 Located at `{UserConfigDir}/GhostDraft/champions.db`
 - Auto-created on first run
 - Stores: champion name, damage type (AP/AD/Mixed/Tank), role tags
 - Used for team comp analysis
+
+## Environment Variables
+```
+DATABASE_URL=postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable
+```
 
 ## Common Tasks
 
@@ -125,3 +115,6 @@ go build ./...           # Check Go compiles
 wails dev                # Run in dev mode
 wails build              # Build production binary
 ```
+
+## Data Pipeline
+See `data-analyzer/CLAUDE.md` for the match collection and aggregation pipeline.
