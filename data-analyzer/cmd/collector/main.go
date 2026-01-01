@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"data-analyzer/internal/riot"
 	"data-analyzer/internal/storage"
@@ -128,6 +129,7 @@ func main() {
 
 	playerCount := 0
 	totalMatchesWritten := 0
+	startTime := time.Now()
 
 	// Process queue
 	for len(queue) > 0 && playerCount < *maxPlayers {
@@ -144,8 +146,10 @@ func main() {
 		queue = queue[1:]
 
 		playerCount++
+		elapsed := time.Since(startTime)
 
-		fmt.Printf("\n[Player %d/%d] Processing: %s\n", playerCount, *maxPlayers, currentPUUID[:20]+"...")
+		fmt.Printf("\n[Player %d/%d] [%s elapsed] Processing: %s\n",
+			playerCount, *maxPlayers, formatDuration(elapsed), currentPUUID[:20]+"...")
 
 		// Fetch match history
 		matchIDs, err := client.GetMatchHistory(ctx, currentPUUID, *matchCount)
@@ -175,27 +179,17 @@ func main() {
 
 			fmt.Printf("  [%d/%d] Fetching match %s...\n", j+1, len(matchIDs), matchID)
 
-			// Fetch match details
+			// Fetch match details (skip timeline - use final items instead)
 			match, err := client.GetMatch(ctx, matchID)
 			if err != nil {
 				log.Printf("    Failed to fetch match: %v", err)
 				continue
 			}
 
-			// Fetch timeline for build order
-			timeline, err := client.GetTimeline(ctx, matchID)
-			if err != nil {
-				log.Printf("    Failed to fetch timeline: %v", err)
-				continue
-			}
-
 			// Write each participant as a separate record
-			for pIdx, participant := range match.Info.Participants {
-				participantID := pIdx + 1 // Participant IDs are 1-indexed in timeline
-
-				// Extract build order from timeline
-				buildOrder := riot.ExtractBuildOrder(timeline, participantID)
-
+			for _, participant := range match.Info.Participants {
+				// Use final items instead of build order from timeline
+				// This saves 1 API call per match (~50% faster)
 				rawMatch := &storage.RawMatch{
 					MatchID:      matchID,
 					GameVersion:  match.Info.GameVersion,
@@ -214,7 +208,6 @@ func main() {
 					Item3:        participant.Item3,
 					Item4:        participant.Item4,
 					Item5:        participant.Item5,
-					BuildOrder:   buildOrder,
 				}
 
 				if err := rotator.WriteLine(rawMatch); err != nil {
@@ -248,9 +241,30 @@ func main() {
 
 shutdown:
 	// Print summary
+	totalDuration := time.Since(startTime)
 	fmt.Printf("\n=== Collection Complete ===\n")
+	fmt.Printf("Total time: %s\n", formatDuration(totalDuration))
 	fmt.Printf("Players processed: %d\n", playerCount)
 	fmt.Printf("Matches written: %d\n", totalMatchesWritten)
 	fmt.Printf("Total records (participants): %d\n", totalMatchesWritten*10)
 	fmt.Printf("Remaining queue: %d\n", len(queue))
+	if totalMatchesWritten > 0 {
+		avgPerMatch := totalDuration / time.Duration(totalMatchesWritten)
+		fmt.Printf("Avg time per match: %s\n", formatDuration(avgPerMatch))
+	}
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	} else if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%02ds", mins, secs)
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	secs := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dh%02dm%02ds", hours, mins, secs)
 }

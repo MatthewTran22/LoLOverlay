@@ -6,18 +6,26 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
 const (
 	// API base URLs
 	americasBaseURL = "https://americas.api.riotgames.com"
+
+	// Rate limit settings (conservative: 90 req/2min instead of 100)
+	maxRequestsPer2Min = 90
+	rateLimitWindow    = 2 * time.Minute
+	minRequestInterval = 50 * time.Millisecond // Max ~20 req/sec
 )
 
 // Client is a Riot API client that handles 429 rate limit responses
 type Client struct {
-	apiKey     string
-	httpClient *http.Client
+	apiKey       string
+	httpClient   *http.Client
+	requestTimes []time.Time
+	mu           sync.Mutex
 }
 
 // NewClient creates a new Riot API client
@@ -41,13 +49,70 @@ func NewClient() (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		requestTimes: make([]time.Time, 0, maxRequestsPer2Min),
 	}, nil
+}
+
+// rateLimit implements a sliding window rate limiter
+func (c *Client) rateLimit() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	windowStart := now.Add(-rateLimitWindow)
+
+	// Remove requests outside the 2-minute window
+	validTimes := make([]time.Time, 0, len(c.requestTimes))
+	for _, t := range c.requestTimes {
+		if t.After(windowStart) {
+			validTimes = append(validTimes, t)
+		}
+	}
+	c.requestTimes = validTimes
+
+	// If at limit, wait until oldest request expires
+	if len(c.requestTimes) >= maxRequestsPer2Min {
+		oldestRequest := c.requestTimes[0]
+		waitUntil := oldestRequest.Add(rateLimitWindow)
+		sleepDuration := time.Until(waitUntil)
+		if sleepDuration > 0 {
+			fmt.Printf("      [Rate Limit] At %d/%d requests, waiting %.1fs...\n",
+				len(c.requestTimes), maxRequestsPer2Min, sleepDuration.Seconds())
+			c.mu.Unlock()
+			time.Sleep(sleepDuration + 100*time.Millisecond) // Small buffer
+			c.mu.Lock()
+			// Re-clean after sleeping
+			now = time.Now()
+			windowStart = now.Add(-rateLimitWindow)
+			validTimes = make([]time.Time, 0, len(c.requestTimes))
+			for _, t := range c.requestTimes {
+				if t.After(windowStart) {
+					validTimes = append(validTimes, t)
+				}
+			}
+			c.requestTimes = validTimes
+		}
+	}
+
+	// Enforce minimum interval between requests (20 req/sec max)
+	if len(c.requestTimes) > 0 {
+		lastRequest := c.requestTimes[len(c.requestTimes)-1]
+		elapsed := time.Since(lastRequest)
+		if elapsed < minRequestInterval {
+			c.mu.Unlock()
+			time.Sleep(minRequestInterval - elapsed)
+			c.mu.Lock()
+		}
+	}
+
+	// Record this request
+	c.requestTimes = append(c.requestTimes, time.Now())
 }
 
 // doRequest makes a request and handles 429 rate limit responses
 func (c *Client) doRequest(ctx context.Context, url string, result interface{}) error {
-	// Sleep to stay under 100 requests/2min rate limit (~1.2s between requests)
-	time.Sleep(1300 * time.Millisecond)
+	// Smart rate limiting
+	c.rateLimit()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
