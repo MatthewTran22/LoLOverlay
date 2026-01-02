@@ -21,28 +21,53 @@ Riot API → Collector (spider) → JSONL files → Reducer → data.json + mani
 ## Quick Start
 
 ```bash
+# One command to collect + reduce (recommended)
+go run cmd/pipeline/main.go --riot-id="Player#NA1" --max-players=100
+
+# Or run steps separately:
 # 1. Collect match data (spider from a starting player)
 go run cmd/collector/main.go --riot-id="Player#NA1"
 
 # 2. Process collected data and export to JSON
-go run cmd/reducer/main.go --output-dir=./export --base-url=https://your-cdn.com/data --no-db
+go run cmd/reducer/main.go --output-dir=./export
 
-# 3. Upload export/manifest.json and export/data.json to your CDN
+# 3. Upload export/data.json to your CDN and update manifest.json
+```
 
-# 4. (Optional) View data in web UI (requires PostgreSQL)
-docker-compose up -d
-go run cmd/reducer/main.go  # Writes to PostgreSQL
-go run cmd/server/main.go
-# Open http://localhost:8080
+### Pipeline Options
+```bash
+go run cmd/pipeline/main.go \
+  --riot-id="Player#NA1" \  # Starting player (required)
+  --count=20 \              # Matches per player (default: 20)
+  --max-players=100 \       # Max players to spider (default: 100)
+  --output-dir=./export \   # Output directory (default: ./export)
+  --reduce-only             # Skip collection, only run reducer
 ```
 
 ### Reducer Options
 ```bash
 go run cmd/reducer/main.go \
-  --output-dir=./export \    # Directory for JSON output
-  --base-url=https://... \   # Base URL for manifest.dataUrl
-  --no-db                    # Skip PostgreSQL writes (JSON only)
+  --output-dir=./export      # Directory for JSON output (default: ./export)
 ```
+
+## Docker UI
+
+Run the pipeline from a web UI:
+
+```bash
+# Set your Riot API key
+export RIOT_API_KEY=RGAPI-xxxxx
+
+# Start the UI
+docker-compose up pipeline
+
+# Open http://localhost:8080
+```
+
+The UI provides:
+- Form to input Riot ID and settings
+- Real-time streaming output
+- Reduce-only mode (skip collection)
 
 ## Environment Variables
 Create `.env` file:

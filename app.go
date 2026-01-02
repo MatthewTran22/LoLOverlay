@@ -1002,9 +1002,40 @@ type MetaChampion struct {
 
 // MetaData represents the top champions for all roles
 type MetaData struct {
-	Patch   string                   `json:"patch"`
-	HasData bool                     `json:"hasData"`
+	Patch   string                    `json:"patch"`
+	HasData bool                      `json:"hasData"`
 	Roles   map[string][]MetaChampion `json:"roles"`
+}
+
+// ForceStatsUpdate forces a redownload of stats data
+func (a *App) ForceStatsUpdate() string {
+	if a.statsDB == nil {
+		return "Stats database not initialized"
+	}
+
+	manifestURL := os.Getenv("STATS_MANIFEST_URL")
+	if manifestURL == "" {
+		manifestURL = data.DefaultManifestURL
+	}
+
+	if err := a.statsDB.ForceUpdate(manifestURL); err != nil {
+		return fmt.Sprintf("Update failed: %v", err)
+	}
+
+	// Recreate stats provider with new data
+	if a.statsDB.HasData() {
+		provider, err := stats.NewProvider(a.statsDB)
+		if err != nil {
+			return fmt.Sprintf("Provider creation failed: %v", err)
+		}
+		if provider.GetPatch() == "" {
+			provider.FetchPatch()
+		}
+		a.statsProvider = provider
+		return fmt.Sprintf("Updated to %s", provider.GetPatch())
+	}
+
+	return "Update completed but no data available"
 }
 
 // GetMetaChampions returns the top 5 champions by win rate for each role

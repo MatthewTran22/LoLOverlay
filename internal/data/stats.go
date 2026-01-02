@@ -30,6 +30,7 @@ type Manifest struct {
 	DataURL     string `json:"data_url"`
 	DataSha256  string `json:"data_sha256"`
 	UpdatedAt   string `json:"updated_at"`
+	ForceReset  bool   `json:"force_reset"`
 }
 
 // DataExport represents the data.json structure from the reducer
@@ -212,7 +213,13 @@ func (s *StatsDB) CheckForUpdates(manifestURL string) error {
 		return fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
-	fmt.Printf("[Stats] Remote version: %s, Local patch: %s\n", manifest.Version, s.currentPatch)
+	fmt.Printf("[Stats] Remote version: %s, Local patch: %s, ForceReset: %v\n", manifest.Version, s.currentPatch, manifest.ForceReset)
+
+	// Force reset clears local data before comparing versions
+	if manifest.ForceReset {
+		fmt.Println("[Stats] Force reset requested - clearing local data")
+		s.clearLocalData()
+	}
 
 	// Compare versions (simple string comparison works for semantic versions like "14.24.1")
 	if manifest.Version != "" && manifest.Version <= s.currentPatch {
@@ -382,6 +389,19 @@ func (s *StatsDB) HasData() bool {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM champion_stats").Scan(&count)
 	return err == nil && count > 0
+}
+
+// clearLocalData clears the version tracking to force a redownload
+func (s *StatsDB) clearLocalData() {
+	s.db.Exec("DELETE FROM data_version")
+	s.currentPatch = ""
+}
+
+// ForceUpdate clears local version and triggers a fresh download
+func (s *StatsDB) ForceUpdate(manifestURL string) error {
+	fmt.Println("[Stats] Force update requested - clearing local version")
+	s.clearLocalData()
+	return s.CheckForUpdates(manifestURL)
 }
 
 // Close closes the database connection

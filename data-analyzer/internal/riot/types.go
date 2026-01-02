@@ -27,6 +27,7 @@ type MatchInfo struct {
 }
 
 type MatchParticipant struct {
+	ParticipantID  int    `json:"participantId"`
 	PUUID          string `json:"puuid"`
 	RiotIdGameName string `json:"riotIdGameName"`
 	RiotIdTagline  string `json:"riotIdTagline"`

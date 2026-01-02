@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoL Data Pipeline</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #c89b3c;
+            margin-bottom: 0.5rem;
+            font-size: 1.8rem;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: #13131a;
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card h2 {
+            color: #c89b3c;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 1rem;
+        }
+
+        .status-row {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.9rem;
+        }
+
+        .status-item {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .status-label {
+            color: #666;
+        }
+
+        .status-value {
+            color: #4ade80;
+        }
+
+        .status-value.warning {
+            color: #fbbf24;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-group.full-width {
+            grid-column: 1 / -1;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            background: #1a1a24;
+            border: 1px solid #2a2a3a;
+            border-radius: 4px;
+            padding: 0.75rem;
+            color: #e0e0e0;
+            font-size: 1rem;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #c89b3c;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #c89b3c;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        button {
+            background: #c89b3c;
+            color: #0a0a0f;
+            border: none;
+            padding: 0.75rem 2rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #daa520;
+        }
+
+        button:disabled {
+            background: #444;
+            color: #888;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: #2a2a3a;
+            color: #e0e0e0;
+        }
+
+        button.secondary:hover {
+            background: #3a3a4a;
+        }
+
+        .output-container {
+            background: #0d0d12;
+            border: 1px solid #2a2a3a;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            padding: 1rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .output-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .output-line.error {
+            color: #ef4444;
+        }
+
+        .output-line.success {
+            color: #4ade80;
+        }
+
+        .output-line.info {
+            color: #60a5fa;
+        }
+
+        .output-line.cmd {
+            color: #c89b3c;
+        }
+
+        .running-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #4ade80;
+            font-size: 0.9rem;
+        }
+
+        .running-indicator .dot {
+            width: 8px;
+            height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LoL Data Pipeline</h1>
+        <p class="subtitle">Collect match data and generate stats</p>
+
+        <div class="card">
+            <h2>Environment</h2>
+            <div class="status-row">
+                <div class="status-item">
+                    <span class="status-label">Riot API Key:</span>
+                    <span class="status-value {{if eq .RiotAPIKey "Not set"}}warning{{end}}">{{.RiotAPIKey}}</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Storage:</span>
+                    <span class="status-value {{if eq .StoragePath ""}}warning{{else}}{{end}}">{{if .StoragePath}}{{.StoragePath}}{{else}}Not set{{end}}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Pipeline Settings</h2>
+            <form id="pipelineForm">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="riot_id">Starting Riot ID</label>
+                        <input type="text" id="riot_id" name="riot_id" placeholder="Player#NA1">
+                    </div>
+                    <div class="form-group">
+                        <label for="max_players">Max Players to Spider</label>
+                        <input type="number" id="max_players" name="max_players" value="100" min="1" max="10000">
+                    </div>
+                    <div class="form-group">
+                        <label for="match_count">Matches per Player</label>
+                        <input type="number" id="match_count" name="match_count" value="20" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="reduce_only" name="reduce_only">
+                            <label for="reduce_only">Reduce only (skip collection)</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-row">
+                    <button type="submit" id="startBtn">Start Pipeline</button>
+                    <button type="button" class="secondary" id="clearBtn">Clear Output</button>
+                    <span id="runningIndicator" class="running-indicator hidden">
+                        <span class="dot"></span> Running...
+                    </span>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Output</h2>
+            <div class="output-container" id="output"></div>
+        </div>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        const form = document.getElementById('pipelineForm');
+        const startBtn = document.getElementById('startBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const runningIndicator = document.getElementById('runningIndicator');
+        const reduceOnly = document.getElementById('reduce_only');
+        const riotIdInput = document.getElementById('riot_id');
+
+        let eventSource = null;
+
+        function appendOutput(text) {
+            const line = document.createElement('div');
+            line.className = 'output-line';
+
+            if (text.includes('[ERROR]')) {
+                line.classList.add('error');
+            } else if (text.includes('SUCCESS') || text.includes('COMPLETE')) {
+                line.classList.add('success');
+            } else if (text.includes('[INFO]') || text.includes('[CONNECTED]')) {
+                line.classList.add('info');
+            } else if (text.includes('[CMD]')) {
+                line.classList.add('cmd');
+            }
+
+            line.textContent = text;
+            output.appendChild(line);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function connectStream() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/stream');
+
+            eventSource.onmessage = (event) => {
+                appendOutput(event.data);
+
+                if (event.data.includes('[PIPELINE COMPLETE]')) {
+                    setRunning(false);
+                }
+            };
+
+            eventSource.onerror = () => {
+                appendOutput('[DISCONNECTED] Connection lost, reconnecting...');
+                setTimeout(connectStream, 2000);
+            };
+        }
+
+        function setRunning(running) {
+            startBtn.disabled = running;
+            runningIndicator.classList.toggle('hidden', !running);
+        }
+
+        // Check initial status
+        fetch('/status')
+            .then(r => r.json())
+            .then(data => setRunning(data.running));
+
+        // Connect to SSE stream
+        connectStream();
+
+        // Toggle riot_id requirement based on reduce_only
+        reduceOnly.addEventListener('change', () => {
+            riotIdInput.required = !reduceOnly.checked;
+            riotIdInput.disabled = reduceOnly.checked;
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(form);
+            formData.set('reduce_only', reduceOnly.checked ? 'true' : 'false');
+
+            try {
+                const response = await fetch('/start', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    appendOutput('[ERROR] ' + data.error);
+                } else {
+                    setRunning(true);
+                }
+            } catch (err) {
+                appendOutput('[ERROR] Failed to start: ' + err.message);
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            output.innerHTML = '';
+        });
+    </script>
+</body>
+</html>

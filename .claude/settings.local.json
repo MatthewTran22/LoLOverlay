@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(go build:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Skill(frontend-design)"
     ]
   }
 }

@@ -671,8 +671,8 @@ func exportToJSON(outputDir, patch string,
 
 	dataSha256 := hex.EncodeToString(hasher.Sum(nil))
 
-	fmt.Printf("  Wrote data.json: %d champion stats, %d item stats, %d matchup stats\n",
-		len(champStatsJSON), len(itemStatsJSON), len(matchupStatsJSON))
+	fmt.Printf("  Wrote data.json: %d champion stats, %d item stats, %d item slot stats, %d matchup stats\n",
+		len(champStatsJSON), len(itemStatsJSON), len(itemSlotStatsJSON), len(matchupStatsJSON))
 	fmt.Printf("  SHA256: %s\n", dataSha256)
 	return nil
 }

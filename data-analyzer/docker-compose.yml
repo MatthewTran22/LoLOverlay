@@ -1,6 +1,18 @@
 version: '3.8'
 
 services:
+  pipeline:
+    build: .
+    container_name: lol-pipeline
+    ports:
+      - "8080:8080"
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - BLOB_STORAGE_PATH=/app/data
+    volumes:
+      - ./data:/app/data
+      - ./export:/app/export
+
   postgres:
     image: postgres:15-alpine
     container_name: lol-analyzer-db
