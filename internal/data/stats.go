@@ -16,7 +16,7 @@ import (
 )
 
 // DefaultManifestURL is the default URL for fetching stats data
-const DefaultManifestURL = "https://cdn.jsdelivr.net/gh/MatthewTran22/LoLOverlay-Data@main/manifest.json"
+const DefaultManifestURL = "https://raw.githubusercontent.com/MatthewTran22/LoLOverlay-Data/main/manifest.json"
 
 // StatsDB manages the stats database with remote update capability
 type StatsDB struct {
@@ -34,11 +34,12 @@ type Manifest struct {
 
 // DataExport represents the data.json structure from the reducer
 type DataExport struct {
-	Patch            string              `json:"patch"`
-	GeneratedAt      string              `json:"generatedAt"`
-	ChampionStats    []ChampionStatJSON  `json:"championStats"`
-	ChampionItems    []ChampionItemJSON  `json:"championItems"`
-	ChampionMatchups []ChampionMatchupJSON `json:"championMatchups"`
+	Patch             string                 `json:"patch"`
+	GeneratedAt       string                 `json:"generatedAt"`
+	ChampionStats     []ChampionStatJSON     `json:"championStats"`
+	ChampionItems     []ChampionItemJSON     `json:"championItems"`
+	ChampionItemSlots []ChampionItemSlotJSON `json:"championItemSlots"`
+	ChampionMatchups  []ChampionMatchupJSON  `json:"championMatchups"`
 }
 
 type ChampionStatJSON struct {
@@ -54,6 +55,16 @@ type ChampionItemJSON struct {
 	ChampionID   int    `json:"championId"`
 	TeamPosition string `json:"teamPosition"`
 	ItemID       int    `json:"itemId"`
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
+}
+
+type ChampionItemSlotJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	ItemID       int    `json:"itemId"`
+	BuildSlot    int    `json:"buildSlot"`
 	Wins         int    `json:"wins"`
 	Matches      int    `json:"matches"`
 }
@@ -125,6 +136,17 @@ func (s *StatsDB) init() error {
 			wins INTEGER NOT NULL DEFAULT 0,
 			matches INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (patch, champion_id, team_position, item_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS champion_item_slots (
+			patch TEXT NOT NULL,
+			champion_id INTEGER NOT NULL,
+			team_position TEXT NOT NULL,
+			item_id INTEGER NOT NULL,
+			build_slot INTEGER NOT NULL,
+			wins INTEGER NOT NULL DEFAULT 0,
+			matches INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (patch, champion_id, team_position, item_id, build_slot)
 		);
 
 		CREATE TABLE IF NOT EXISTS champion_matchups (
@@ -265,6 +287,9 @@ func (s *StatsDB) ImportData(data *DataExport, version string) error {
 	if _, err := tx.Exec("DELETE FROM champion_items"); err != nil {
 		return fmt.Errorf("failed to clear champion_items: %w", err)
 	}
+	if _, err := tx.Exec("DELETE FROM champion_item_slots"); err != nil {
+		return fmt.Errorf("failed to clear champion_item_slots: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM champion_matchups"); err != nil {
 		return fmt.Errorf("failed to clear champion_matchups: %w", err)
 	}
@@ -301,6 +326,22 @@ func (s *StatsDB) ImportData(data *DataExport, version string) error {
 		}
 	}
 
+	// Insert champion_item_slots using prepared statement
+	stmtItemSlots, err := tx.Prepare(`
+		INSERT INTO champion_item_slots (patch, champion_id, team_position, item_id, build_slot, wins, matches)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare champion_item_slots statement: %w", err)
+	}
+	defer stmtItemSlots.Close()
+
+	for _, slot := range data.ChampionItemSlots {
+		if _, err := stmtItemSlots.Exec(slot.Patch, slot.ChampionID, slot.TeamPosition, slot.ItemID, slot.BuildSlot, slot.Wins, slot.Matches); err != nil {
+			return fmt.Errorf("failed to insert champion_item_slots: %w", err)
+		}
+	}
+
 	// Insert champion_matchups using prepared statement
 	stmtMatchups, err := tx.Prepare(`
 		INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches)
@@ -330,8 +371,8 @@ func (s *StatsDB) ImportData(data *DataExport, version string) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	fmt.Printf("[Stats] Imported: %d champion stats, %d item stats, %d matchup stats\n",
-		len(data.ChampionStats), len(data.ChampionItems), len(data.ChampionMatchups))
+	fmt.Printf("[Stats] Imported: %d champion stats, %d item stats, %d item slot stats, %d matchup stats\n",
+		len(data.ChampionStats), len(data.ChampionItems), len(data.ChampionItemSlots), len(data.ChampionMatchups))
 
 	return nil
 }

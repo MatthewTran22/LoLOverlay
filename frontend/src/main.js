@@ -259,7 +259,10 @@ function updateChampSelect(data) {
     tabsContainer.classList.remove('hidden');
 
     if (!data.inChampSelect) {
-        // Not in champ select - could show a message or just keep tabs visible
+        // Reset team comp UI when leaving champ select
+        compWaiting.classList.remove('hidden');
+        compAnalysis.classList.add('hidden');
+        teamcompCard.classList.add('hidden');
         return;
     }
 }
@@ -447,10 +450,6 @@ function renderBuildContent(buildIdx) {
     };
 
     buildContent.innerHTML = `
-        <div class="items-section">
-            <div class="items-header">Starting Items</div>
-            <div class="items-grid">${renderBasicItems(build.startingItems)}</div>
-        </div>
         <div class="items-section">
             <div class="items-header">Core Items</div>
             <div class="items-grid">${renderBasicItems(build.coreItems)}</div>

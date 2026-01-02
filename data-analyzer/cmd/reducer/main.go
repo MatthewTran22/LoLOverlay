@@ -154,13 +154,29 @@ type MatchupStats struct {
 	Matches int
 }
 
+// ItemSlotStatsKey is the composite key for item slot stats
+type ItemSlotStatsKey struct {
+	Patch        string
+	ChampionID   int
+	TeamPosition string
+	ItemID       int
+	BuildSlot    int // 1-6 for first through sixth completed item
+}
+
+// ItemSlotStats holds aggregated item slot statistics
+type ItemSlotStats struct {
+	Wins    int
+	Matches int
+}
+
 // JSON export types
 type DataExport struct {
-	Patch            string                `json:"patch"`
-	GeneratedAt      string                `json:"generatedAt"`
-	ChampionStats    []ChampionStatJSON    `json:"championStats"`
-	ChampionItems    []ChampionItemJSON    `json:"championItems"`
-	ChampionMatchups []ChampionMatchupJSON `json:"championMatchups"`
+	Patch            string                  `json:"patch"`
+	GeneratedAt      string                  `json:"generatedAt"`
+	ChampionStats    []ChampionStatJSON      `json:"championStats"`
+	ChampionItems    []ChampionItemJSON      `json:"championItems"`
+	ChampionItemSlots []ChampionItemSlotJSON `json:"championItemSlots"`
+	ChampionMatchups []ChampionMatchupJSON   `json:"championMatchups"`
 }
 
 type ChampionStatJSON struct {
@@ -187,6 +203,16 @@ type ChampionMatchupJSON struct {
 	EnemyChampionID int    `json:"enemyChampionId"`
 	Wins            int    `json:"wins"`
 	Matches         int    `json:"matches"`
+}
+
+type ChampionItemSlotJSON struct {
+	Patch        string `json:"patch"`
+	ChampionID   int    `json:"championId"`
+	TeamPosition string `json:"teamPosition"`
+	ItemID       int    `json:"itemId"`
+	BuildSlot    int    `json:"buildSlot"` // 1-6
+	Wins         int    `json:"wins"`
+	Matches      int    `json:"matches"`
 }
 
 func main() {
@@ -237,6 +263,7 @@ func main() {
 	// Aggregate ALL files together into global maps
 	allChampionStats := make(map[ChampionStatsKey]*ChampionStats)
 	allItemStats := make(map[ItemStatsKey]*ItemStats)
+	allItemSlotStats := make(map[ItemSlotStatsKey]*ItemSlotStats)
 	allMatchupStats := make(map[MatchupStatsKey]*MatchupStats)
 	var detectedPatch string
 
@@ -244,7 +271,7 @@ func main() {
 	for i, filePath := range files {
 		fmt.Printf("\n[%d/%d] Processing: %s\n", i+1, len(files), filepath.Base(filePath))
 
-		championStats, itemStats, matchupStats, patch, err := aggregateFile(filePath)
+		championStats, itemStats, itemSlotStats, matchupStats, patch, err := aggregateFile(filePath)
 		if err != nil {
 			log.Printf("  Error processing file: %v", err)
 			continue
@@ -274,6 +301,15 @@ func main() {
 			}
 		}
 
+		for k, v := range itemSlotStats {
+			if existing, ok := allItemSlotStats[k]; ok {
+				existing.Wins += v.Wins
+				existing.Matches += v.Matches
+			} else {
+				allItemSlotStats[k] = v
+			}
+		}
+
 		for k, v := range matchupStats {
 			if existing, ok := allMatchupStats[k]; ok {
 				existing.Wins += v.Wins
@@ -283,19 +319,20 @@ func main() {
 			}
 		}
 
-		fmt.Printf("  Aggregated: %d champion stats, %d item stats, %d matchup stats\n",
-			len(championStats), len(itemStats), len(matchupStats))
+		fmt.Printf("  Aggregated: %d champion stats, %d item stats, %d item slot stats, %d matchup stats\n",
+			len(championStats), len(itemStats), len(itemSlotStats), len(matchupStats))
 	}
 
 	fmt.Printf("\n=== Total Aggregated ===\n")
 	fmt.Printf("Champion stats: %d\n", len(allChampionStats))
 	fmt.Printf("Item stats: %d\n", len(allItemStats))
+	fmt.Printf("Item slot stats: %d\n", len(allItemSlotStats))
 	fmt.Printf("Matchup stats: %d\n", len(allMatchupStats))
 	fmt.Printf("Detected patch: %s\n", detectedPatch)
 
 	// Export to JSON
 	fmt.Printf("\n=== Exporting JSON ===\n")
-	if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allMatchupStats); err != nil {
+	if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
 		log.Fatalf("Failed to export JSON: %v", err)
 	}
 	fmt.Printf("Exported to: %s\n", *outputDir)
@@ -310,15 +347,16 @@ func main() {
 	fmt.Println("\n=== Reducer Complete ===")
 }
 
-func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, map[MatchupStatsKey]*MatchupStats, string, error) {
+func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[ItemStatsKey]*ItemStats, map[ItemSlotStatsKey]*ItemSlotStats, map[MatchupStatsKey]*MatchupStats, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, nil, "", err
 	}
 	defer file.Close()
 
 	championStats := make(map[ChampionStatsKey]*ChampionStats)
 	itemStats := make(map[ItemStatsKey]*ItemStats)
+	itemSlotStats := make(map[ItemSlotStatsKey]*ItemSlotStats)
 	matchupStats := make(map[MatchupStatsKey]*MatchupStats)
 	var detectedPatch string
 
@@ -365,14 +403,19 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 			championStats[champKey].Wins++
 		}
 
-		// Aggregate item stats
-		items := deduplicateItems(match.Item0, match.Item1, match.Item2, match.Item3, match.Item4, match.Item5)
-
-		for _, itemID := range items {
-			if itemID == 0 || !isCompletedItem(itemID) {
+		// Aggregate item stats from build order (purchase order, not final inventory)
+		// This gives better stats on what items players actually build
+		seenItems := make(map[int]bool)
+		buildSlot := 0
+		for _, itemID := range match.BuildOrder {
+			// Skip empty, duplicates, and non-completed items
+			if itemID == 0 || seenItems[itemID] || !isCompletedItem(itemID) {
 				continue
 			}
+			seenItems[itemID] = true
+			buildSlot++
 
+			// Regular item stats (which items are built)
 			itemKey := ItemStatsKey{
 				Patch:        patch,
 				ChampionID:   match.ChampionID,
@@ -387,6 +430,26 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 			if match.Win {
 				itemStats[itemKey].Wins++
 			}
+
+			// Item slot stats (which items are built in which slot)
+			// Only track slots 1-6
+			if buildSlot <= 6 {
+				slotKey := ItemSlotStatsKey{
+					Patch:        patch,
+					ChampionID:   match.ChampionID,
+					TeamPosition: match.TeamPosition,
+					ItemID:       itemID,
+					BuildSlot:    buildSlot,
+				}
+
+				if _, exists := itemSlotStats[slotKey]; !exists {
+					itemSlotStats[slotKey] = &ItemSlotStats{}
+				}
+				itemSlotStats[slotKey].Matches++
+				if match.Win {
+					itemSlotStats[slotKey].Wins++
+				}
+			}
 		}
 
 		// Group by matchId for matchup calculation
@@ -394,7 +457,7 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, nil, "", err
 	}
 
 	// Second pass: calculate matchups from grouped participants
@@ -453,7 +516,7 @@ func aggregateFile(filePath string) (map[ChampionStatsKey]*ChampionStats, map[It
 	}
 
 	fmt.Printf("  Processed %d lines, %d unique matches\n", lineNum, len(matchParticipants))
-	return championStats, itemStats, matchupStats, detectedPatch, nil
+	return championStats, itemStats, itemSlotStats, matchupStats, detectedPatch, nil
 }
 
 // normalizePatch truncates version to first two segments (e.g., 14.23.448 -> 14.23)
@@ -522,6 +585,7 @@ func archiveFile(srcPath, coldDir string) error {
 func exportToJSON(outputDir, patch string,
 	championStats map[ChampionStatsKey]*ChampionStats,
 	itemStats map[ItemStatsKey]*ItemStats,
+	itemSlotStats map[ItemSlotStatsKey]*ItemSlotStats,
 	matchupStats map[MatchupStatsKey]*MatchupStats) error {
 
 	// Ensure output directory exists
@@ -553,6 +617,19 @@ func exportToJSON(outputDir, patch string,
 		})
 	}
 
+	var itemSlotStatsJSON []ChampionItemSlotJSON
+	for k, v := range itemSlotStats {
+		itemSlotStatsJSON = append(itemSlotStatsJSON, ChampionItemSlotJSON{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			ItemID:       k.ItemID,
+			BuildSlot:    k.BuildSlot,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+
 	var matchupStatsJSON []ChampionMatchupJSON
 	for k, v := range matchupStats {
 		matchupStatsJSON = append(matchupStatsJSON, ChampionMatchupJSON{
@@ -566,11 +643,12 @@ func exportToJSON(outputDir, patch string,
 	}
 
 	export := DataExport{
-		Patch:            patch,
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-		ChampionStats:    champStatsJSON,
-		ChampionItems:    itemStatsJSON,
-		ChampionMatchups: matchupStatsJSON,
+		Patch:             patch,
+		GeneratedAt:       time.Now().UTC().Format(time.RFC3339),
+		ChampionStats:     champStatsJSON,
+		ChampionItems:     itemStatsJSON,
+		ChampionItemSlots: itemSlotStatsJSON,
+		ChampionMatchups:  matchupStatsJSON,
 	}
 
 	// Write data.json

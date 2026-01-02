@@ -146,7 +146,13 @@ body {
 }
 
 .tab-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+}
+
+#tab-meta.active {
+    display: flex;
+    flex-direction: column;
 }
 
 /* Team Comp Tab */
@@ -642,6 +648,8 @@ body {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    flex: 1;
+    height: 100%;
 }
 
 .meta-loading, .meta-empty {
@@ -669,89 +677,97 @@ body {
 .meta-role-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
+    flex: 1;
 }
 
 .meta-champ-row {
     display: flex;
     align-items: center;
-    padding: 6px 8px;
+    padding: 12px 14px;
     background: #252525;
-    border-radius: 4px;
-    gap: 10px;
+    border-radius: 6px;
+    gap: 14px;
+    flex: 1;
 }
 
 .meta-rank {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
     color: #666;
-    width: 18px;
+    width: 20px;
 }
 
 .meta-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 4px;
-    border: 1px solid #333;
+    width: 44px;
+    height: 44px;
+    border-radius: 6px;
+    border: 2px solid #333;
 }
 
 .meta-name {
     flex: 1;
-    font-size: 14px;
+    font-size: 16px;
     color: #e0e0e0;
 }
 
 .meta-header-row {
     display: flex;
     align-items: center;
-    padding: 6px 8px;
-    gap: 10px;
+    padding: 8px 14px;
+    gap: 14px;
     border-bottom: 1px solid #333;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 
 .meta-rank-header {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: #aaa;
-    width: 18px;
+    width: 20px;
     text-align: center;
 }
 
 .meta-champ-header {
     flex: 1;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: #aaa;
-    padding-left: 42px;
+    padding-left: 58px;
 }
 
 .meta-pr-header,
 .meta-wr-header {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: #aaa;
-    min-width: 50px;
+    min-width: 55px;
     text-align: right;
 }
 
 .meta-pr {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: #5c9fd4;
-    min-width: 50px;
+    min-width: 55px;
     text-align: right;
 }
 
 .meta-wr {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
-    min-width: 50px;
+    min-width: 55px;
     text-align: right;
 }
 
 .meta-wr.winning {
     color: #4caf50;
+}
+
+#meta-role-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
 }
 
 /* Meta Role Tabs */

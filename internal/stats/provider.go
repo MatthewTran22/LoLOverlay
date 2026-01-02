@@ -3,7 +3,6 @@ package stats
 import (
 	"database/sql"
 	"fmt"
-	"sort"
 
 	"ghostdraft/internal/data"
 )
@@ -136,39 +135,11 @@ func (p *Provider) FetchChampionData(championID int, championName string, role s
 		return nil, fmt.Errorf("no data for champion %d in position %s", championID, position)
 	}
 
-	// Get item stats (aggregate across all patches)
-	rows, err := p.db.Query(`
-		SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
-		FROM champion_items
-		WHERE champion_id = ? AND team_position = ?
-		GROUP BY item_id
-		ORDER BY SUM(matches) DESC
-	`, championID, position)
-
+	// Build the response using slot-based data
+	build, err := p.constructBuildPathFromSlots(championID, position, totalGames)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query items: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var items []ItemStat
-	for rows.Next() {
-		var item ItemStat
-		if err := rows.Scan(&item.ItemID, &item.Wins, &item.Matches); err != nil {
-			continue
-		}
-		if item.Matches > 0 {
-			item.WinRate = float64(item.Wins) / float64(item.Matches) * 100
-			item.PickRate = float64(item.Matches) / float64(totalGames) * 100
-		}
-		items = append(items, item)
-	}
-
-	if len(items) == 0 {
-		return nil, fmt.Errorf("no item data for champion %d", championID)
-	}
-
-	// Build the response
-	build := p.constructBuildPath(items, totalGames)
 
 	return &BuildData{
 		ChampionID:   championID,
@@ -178,70 +149,71 @@ func (p *Provider) FetchChampionData(championID int, championName string, role s
 	}, nil
 }
 
-// constructBuildPath creates a build path from item stats
-func (p *Provider) constructBuildPath(items []ItemStat, totalGames int) BuildPath {
-	// Separate items by category
-	var boots []ItemStat
-	var mythics []ItemStat // High-cost items (likely first items)
-	var legendary []ItemStat
+// constructBuildPathFromSlots creates a build path using item slot data
+func (p *Provider) constructBuildPathFromSlots(championID int, position string, totalGames int) (BuildPath, error) {
+	// Query items for each slot, ordered by matches (popularity)
+	getSlotItems := func(slot int, limit int) ([]ItemOption, error) {
+		rows, err := p.db.Query(`
+			SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
+			FROM champion_item_slots
+			WHERE champion_id = ? AND team_position = ? AND build_slot = ?
+			GROUP BY item_id
+			ORDER BY SUM(matches) DESC
+			LIMIT ?
+		`, championID, position, slot, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
 
-	for _, item := range items {
-		if isBootsItem(item.ItemID) {
-			boots = append(boots, item)
-		} else if item.PickRate >= 30 { // Highly picked = likely core
-			mythics = append(mythics, item)
-		} else {
-			legendary = append(legendary, item)
+		var items []ItemOption
+		for rows.Next() {
+			var itemID, wins, matches int
+			if err := rows.Scan(&itemID, &wins, &matches); err != nil {
+				continue
+			}
+			if matches > 0 {
+				items = append(items, ItemOption{
+					ItemID:  itemID,
+					WinRate: float64(wins) / float64(matches) * 100,
+					Games:   matches,
+				})
+			}
+		}
+		return items, nil
+	}
+
+	// Get core items (slots 1, 2, 3 - top item from each)
+	var coreItemIDs []int
+	var winRate float64
+	for slot := 1; slot <= 3; slot++ {
+		items, err := getSlotItems(slot, 1)
+		if err != nil {
+			continue
+		}
+		if len(items) > 0 {
+			coreItemIDs = append(coreItemIDs, items[0].ItemID)
+			if slot == 1 {
+				winRate = items[0].WinRate
+			}
 		}
 	}
 
-	// Sort by pick rate for core items
-	sort.Slice(mythics, func(i, j int) bool {
-		return mythics[i].PickRate > mythics[j].PickRate
-	})
-
-	// Sort legendary by a mix of pick rate and win rate
-	sort.Slice(legendary, func(i, j int) bool {
-		// Weight: 70% pick rate, 30% win rate
-		scoreI := legendary[i].PickRate*0.7 + legendary[j].WinRate*0.3
-		scoreJ := legendary[j].PickRate*0.7 + legendary[j].WinRate*0.3
-		return scoreI > scoreJ
-	})
-
-	// Build core items (top 3 by pick rate)
-	var coreItems []int
-	for i := 0; i < len(mythics) && i < 3; i++ {
-		coreItems = append(coreItems, mythics[i].ItemID)
-	}
-
-	// Calculate overall win rate from champion stats
-	var winRate float64
-	if totalGames > 0 && len(mythics) > 0 {
-		// Use the win rate of the most picked item as proxy
-		winRate = mythics[0].WinRate
-	}
-
-	// Fourth, Fifth, Sixth item options
-	fourthItems := p.toItemOptions(legendary, 0, 5)
-	fifthItems := p.toItemOptions(legendary, 0, 5)
-	sixthItems := p.toItemOptions(legendary, 0, 5)
-
-	// Starting items (boots if available)
-	var startingItems []int
-	if len(boots) > 0 {
-		startingItems = append(startingItems, boots[0].ItemID)
-	}
+	// Get 4th, 5th, 6th item options (2 choices each)
+	fourthItems, _ := getSlotItems(4, 2)
+	fifthItems, _ := getSlotItems(5, 2)
+	sixthItems, _ := getSlotItems(6, 2)
 
 	return BuildPath{
 		Name:              "Recommended Build",
 		WinRate:           winRate,
 		Games:             totalGames,
-		StartingItems:     startingItems,
-		CoreItems:         coreItems,
+		StartingItems:     nil,
+		CoreItems:         coreItemIDs,
 		FourthItemOptions: fourthItems,
 		FifthItemOptions:  fifthItems,
 		SixthItemOptions:  sixthItems,
-	}
+	}, nil
 }
 
 // toItemOptions converts ItemStats to ItemOptions
@@ -274,6 +246,36 @@ func isBootsItem(itemID int) bool {
 		3158: true, // Ionian Boots of Lucidity
 	}
 	return boots[itemID]
+}
+
+// isStartingItem checks if an item is a starting item
+func isStartingItem(itemID int) bool {
+	starters := map[int]bool{
+		1054: true, // Doran's Shield
+		1055: true, // Doran's Blade
+		1056: true, // Doran's Ring
+		1082: true, // Dark Seal
+		1083: true, // Cull
+		1101: true, // Scorchclaw Pup
+		1102: true, // Gustwalker Hatchling
+		1103: true, // Mosstomper Seedling
+		2003: true, // Health Potion
+		2031: true, // Refillable Potion
+		2033: true, // Corrupting Potion
+		3070: true, // Tear of the Goddess
+		3850: true, // Spellthief's Edge
+		3851: true, // Frostfang
+		3854: true, // Steel Shoulderguards
+		3855: true, // Runesteel Spaulders
+		3858: true, // Relic Shield
+		3859: true, // Targon's Buckler
+		3862: true, // Spectral Sickle
+		3863: true, // Harrowing Crescent
+		1036: true, // Long Sword
+		1052: true, // Amplifying Tome
+		1058: true, // Needlessly Large Rod
+	}
+	return starters[itemID]
 }
 
 // HasData checks if we have data for a champion
@@ -354,13 +356,13 @@ func (p *Provider) FetchCounterMatchups(championID int, role string, limit int) 
 	}
 
 	// Query matchups ordered by lowest win rate (hardest counters first)
-	// Aggregate across all patches, include matchups with at least 1 game
+	// Aggregate across all patches, require at least 100 games for statistical significance
 	rows, err := p.db.Query(`
 		SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
 		FROM champion_matchups
 		WHERE champion_id = ? AND team_position = ?
 		GROUP BY enemy_champion_id
-		HAVING SUM(matches) >= 1
+		HAVING SUM(matches) >= 20
 		ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) ASC
 		LIMIT ?
 	`, championID, position, limit)
