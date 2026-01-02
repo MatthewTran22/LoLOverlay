@@ -52,17 +52,19 @@ Client App (on startup) → Fetches manifest.json → Compares patch version
 
 ### 3. Stats Provider (SQLite)
 The `internal/stats/provider.go` queries local SQLite database:
-- **FetchChampionData**: Item builds with win rates and pick rates
+- **FetchChampionData**: Item builds by slot position with win rates
 - **FetchAllMatchups**: All matchup win rates for a champion
-- **FetchCounterMatchups**: Top N counters (lowest win rate matchups)
+- **FetchCounterMatchups**: Top N counters (lowest win rate matchups, min 20 games)
 - **FetchMatchup**: Specific champion vs enemy win rate
+- **FetchTopChampionsByRole**: Meta champions by win rate per role
 
 ### Database Tables (local SQLite)
 ```sql
-champion_stats    -- Champion win rates by patch/position
-champion_items    -- Item stats per champion/position
-champion_matchups -- Matchup win rates between champions
-data_version      -- Tracks current patch version
+champion_stats      -- Champion win rates by patch/position
+champion_items      -- Item stats per champion/position (overall)
+champion_item_slots -- Item stats by build slot (1st, 2nd, 3rd, 4th, 5th, 6th item)
+champion_matchups   -- Matchup win rates between champions
+data_version        -- Tracks current patch version
 ```
 
 ### 4. Frontend Events
@@ -78,8 +80,9 @@ EventsOn('fullcomp:update', updateFullComp);
 
 ## UI Tabs
 1. **Matchup** - Counter matchups (champions with lowest WR against you), live matchup WR vs lane opponent
-2. **Build** - Core items, situational items with win rates
+2. **Build** - Core items (slots 1-3), 4th/5th/6th item options with win rates
 3. **Team Comp** - Team archetype analysis (when all locked in)
+4. **Meta** - Top 5 champions by win rate for each role
 
 ## Important Implementation Notes
 

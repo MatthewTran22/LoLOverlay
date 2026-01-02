@@ -99,7 +99,7 @@ CREATE TABLE champion_stats (
     PRIMARY KEY (patch, champion_id, team_position)
 );
 
--- Item stats per champion
+-- Item stats per champion (overall, regardless of build slot)
 CREATE TABLE champion_items (
     patch VARCHAR(10),
     champion_id INT,
@@ -108,6 +108,18 @@ CREATE TABLE champion_items (
     wins INT,
     matches INT,
     PRIMARY KEY (patch, champion_id, team_position, item_id)
+);
+
+-- Item stats by build slot (1st, 2nd, 3rd, 4th, 5th, 6th completed item)
+CREATE TABLE champion_item_slots (
+    patch VARCHAR(10),
+    champion_id INT,
+    team_position VARCHAR(20),
+    item_id INT,
+    build_slot INT,  -- 1-6
+    wins INT,
+    matches INT,
+    PRIMARY KEY (patch, champion_id, team_position, item_id, build_slot)
 );
 
 -- Matchup stats (champion vs enemy)
@@ -125,11 +137,11 @@ CREATE TABLE champion_matchups (
 ## Reducer Features
 
 - **Patch normalization**: `14.24.448` → `14.24`
-- **Item deduplication**: Only counts unique items per player inventory
+- **Build order tracking**: Uses `buildOrder` field to track item purchase order (slots 1-6)
+- **Item deduplication**: Only counts unique items per player
 - **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
 - **Matchup calculation**: Groups participants by matchId to find lane opponents
 - **JSON Export**: Aggregates ALL files together and exports to data.json + manifest.json
-- **Upsert logic**: Incremental updates with `ON CONFLICT DO UPDATE` (PostgreSQL mode)
 - **Archiving**: Compresses processed files to cold/ with gzip
 
 ## JSON Export Format
@@ -153,6 +165,10 @@ CREATE TABLE champion_matchups (
   ],
   "championItems": [
     {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3089, "wins": 3500, "matches": 6000}
+  ],
+  "championItemSlots": [
+    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3089, "buildSlot": 1, "wins": 2000, "matches": 4000},
+    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3157, "buildSlot": 2, "wins": 1800, "matches": 3500}
   ],
   "championMatchups": [
     {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "enemyChampionId": 238, "wins": 450, "matches": 1000}
