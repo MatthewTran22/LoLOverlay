@@ -7,7 +7,6 @@ import (
 
 	"ghostdraft/internal/data"
 	"ghostdraft/internal/lcu"
-	"ghostdraft/internal/stats"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -20,8 +19,8 @@ type App struct {
 	champions        *lcu.ChampionRegistry
 	items            *lcu.ItemRegistry
 	championDB       *data.ChampionDB
-	statsDB          *data.StatsDB   // SQLite database for stats
-	statsProvider    *stats.Provider // Stats queries (uses statsDB)
+	statsDB          *data.StatsDB         // SQLite database for stats
+	statsProvider    *data.StatsProvider   // Stats queries (uses statsDB)
 	stopPoll         chan struct{}
 	lastFetchedChamp    int
 	lastFetchedEnemy    int
@@ -120,7 +119,7 @@ func (a *App) initStats() {
 	}
 
 	// Create stats provider
-	provider, err := stats.NewProvider(statsDB)
+	provider, err := data.NewStatsProvider(statsDB)
 	if err != nil {
 		fmt.Printf("Stats provider not available: %v\n", err)
 		return

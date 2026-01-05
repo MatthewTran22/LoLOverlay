@@ -1,10 +1,8 @@
-package stats
+package data
 
 import (
 	"database/sql"
 	"fmt"
-
-	"ghostdraft/internal/data"
 )
 
 // ItemOption holds item ID with win rate
@@ -34,8 +32,8 @@ type BuildData struct {
 	Builds       []BuildPath
 }
 
-// Provider fetches build data from our SQLite database
-type Provider struct {
+// StatsProvider fetches build data from our SQLite database
+type StatsProvider struct {
 	db           *sql.DB
 	currentPatch string
 }
@@ -66,21 +64,21 @@ type ChampionWinRate struct {
 	PickRate   float64
 }
 
-// NewProvider creates a new stats provider from a StatsDB
-func NewProvider(statsDB *data.StatsDB) (*Provider, error) {
-	return &Provider{
+// NewStatsProvider creates a new stats provider from a StatsDB
+func NewStatsProvider(statsDB *StatsDB) (*StatsProvider, error) {
+	return &StatsProvider{
 		db:           statsDB.GetDB(),
 		currentPatch: statsDB.GetCurrentPatch(),
 	}, nil
 }
 
 // Close is a no-op since the StatsDB owns the connection
-func (p *Provider) Close() {
+func (p *StatsProvider) Close() {
 	// Connection owned by StatsDB
 }
 
 // FetchPatch gets the latest patch from our database
-func (p *Provider) FetchPatch() error {
+func (p *StatsProvider) FetchPatch() error {
 	var patch string
 	err := p.db.QueryRow(`
 		SELECT patch FROM champion_stats
@@ -98,7 +96,7 @@ func (p *Provider) FetchPatch() error {
 }
 
 // GetPatch returns the current patch
-func (p *Provider) GetPatch() string {
+func (p *StatsProvider) GetPatch() string {
 	return p.currentPatch
 }
 
@@ -121,7 +119,7 @@ func roleToPosition(role string) string {
 }
 
 // FetchChampionData gets build data for a champion from our database
-func (p *Provider) FetchChampionData(championID int, championName string, role string) (*BuildData, error) {
+func (p *StatsProvider) FetchChampionData(championID int, championName string, role string) (*BuildData, error) {
 	position := roleToPosition(role)
 
 	// Get total games for this champion/position (aggregate across all patches)
@@ -150,7 +148,7 @@ func (p *Provider) FetchChampionData(championID int, championName string, role s
 }
 
 // constructBuildPathFromSlots creates a build path using item slot data
-func (p *Provider) constructBuildPathFromSlots(championID int, position string, totalGames int) (BuildPath, error) {
+func (p *StatsProvider) constructBuildPathFromSlots(championID int, position string, totalGames int) (BuildPath, error) {
 	// Track excluded items (already used in build)
 	excluded := make(map[int]bool)
 
@@ -263,7 +261,7 @@ func (p *Provider) constructBuildPathFromSlots(championID int, position string, 
 }
 
 // toItemOptions converts ItemStats to ItemOptions
-func (p *Provider) toItemOptions(items []ItemStat, start, count int) []ItemOption {
+func (p *StatsProvider) toItemOptions(items []ItemStat, start, count int) []ItemOption {
 	var options []ItemOption
 	end := start + count
 	if end > len(items) {
@@ -325,7 +323,7 @@ func isStartingItem(itemID int) bool {
 }
 
 // HasData checks if we have data for a champion
-func (p *Provider) HasData(championID int, role string) bool {
+func (p *StatsProvider) HasData(championID int, role string) bool {
 	position := roleToPosition(role)
 
 	var count int
@@ -338,7 +336,7 @@ func (p *Provider) HasData(championID int, role string) bool {
 }
 
 // FetchMatchup returns the win rate for a specific champion vs enemy matchup
-func (p *Provider) FetchMatchup(championID int, enemyChampionID int, role string) (*MatchupStat, error) {
+func (p *StatsProvider) FetchMatchup(championID int, enemyChampionID int, role string) (*MatchupStat, error) {
 	position := roleToPosition(role)
 
 	var m MatchupStat
@@ -360,7 +358,7 @@ func (p *Provider) FetchMatchup(championID int, enemyChampionID int, role string
 }
 
 // FetchAllMatchups returns all matchup data for a champion in a role
-func (p *Provider) FetchAllMatchups(championID int, role string) ([]MatchupStat, error) {
+func (p *StatsProvider) FetchAllMatchups(championID int, role string) ([]MatchupStat, error) {
 	position := roleToPosition(role)
 
 	// Aggregate across all patches
@@ -394,7 +392,7 @@ func (p *Provider) FetchAllMatchups(championID int, role string) ([]MatchupStat,
 
 // FetchCounterMatchups returns the champions that counter the specified champion
 // (i.e., matchups where the specified champion has the lowest win rate)
-func (p *Provider) FetchCounterMatchups(championID int, role string, limit int) ([]MatchupStat, error) {
+func (p *StatsProvider) FetchCounterMatchups(championID int, role string, limit int) ([]MatchupStat, error) {
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -436,7 +434,7 @@ func (p *Provider) FetchCounterMatchups(championID int, role string, limit int) 
 
 // FetchCounterPicks returns champions that counter a specific enemy champion in a role
 // (i.e., champions with high win rate against the enemy)
-func (p *Provider) FetchCounterPicks(enemyChampionID int, role string, limit int) ([]MatchupStat, error) {
+func (p *StatsProvider) FetchCounterPicks(enemyChampionID int, role string, limit int) ([]MatchupStat, error) {
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -481,7 +479,7 @@ func (p *Provider) FetchCounterPicks(enemyChampionID int, role string, limit int
 }
 
 // FetchTopChampionsByRole returns the top N champions by win rate for a given role
-func (p *Provider) FetchTopChampionsByRole(role string, limit int) ([]ChampionWinRate, error) {
+func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]ChampionWinRate, error) {
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -534,7 +532,7 @@ func (p *Provider) FetchTopChampionsByRole(role string, limit int) ([]ChampionWi
 }
 
 // FetchAllRolesTopChampions returns top N champions for all 5 roles
-func (p *Provider) FetchAllRolesTopChampions(limit int) (map[string][]ChampionWinRate, error) {
+func (p *StatsProvider) FetchAllRolesTopChampions(limit int) (map[string][]ChampionWinRate, error) {
 	roles := []string{"top", "jungle", "middle", "bottom", "utility"}
 	result := make(map[string][]ChampionWinRate)
 

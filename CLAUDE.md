@@ -50,7 +50,11 @@ Both the desktop app and website use a unified visual theme:
 ## Desktop App Structure
 
 ```
-├── app.go                 # Main application logic, event handlers
+├── app.go                 # Main application struct, startup/shutdown, LCU polling
+├── app_champselect.go     # Champion select event handling
+├── app_emitters.go        # Real-time event emitters (fetchAndEmit* functions)
+├── app_meta.go            # Meta tab types and API functions
+├── app_stats.go           # Personal stats and force update
 ├── main.go                # Wails app entry point
 ├── frontend/
 │   └── src/
@@ -63,11 +67,10 @@ Both the desktop app and website use a unified visual theme:
 │   │   ├── champions.go   # ChampionRegistry - ID→name/icon from Data Dragon
 │   │   ├── items.go       # ItemRegistry - ID→name/icon from Data Dragon
 │   │   └── types.go       # LCU data structures
-│   ├── stats/
-│   │   └── provider.go    # SQLite queries for builds, matchups, counters
 │   └── data/
-│       ├── champions.go   # SQLite DB for static champion data (damage types, tags)
-│       └── stats.go       # SQLite DB for match stats with remote update mechanism
+│       ├── champions.go     # SQLite DB for static champion data (damage types, tags)
+│       ├── stats.go         # SQLite DB for match stats with remote update mechanism
+│       └── stats_queries.go # StatsProvider - SQLite queries for builds, matchups, counters
 ├── data-analyzer/         # Separate module for collecting match data
 ├── website/               # Next.js companion website
 ```
@@ -92,10 +95,11 @@ Client App (on startup) → Fetches manifest.json → Compares patch version
 ```
 
 ### 3. Stats Provider (SQLite)
-The `internal/stats/provider.go` queries local SQLite database:
+The `internal/data/stats_queries.go` queries local SQLite database:
 - **FetchChampionData**: Item builds by slot position with win rates
 - **FetchAllMatchups**: All matchup win rates for a champion
-- **FetchCounterMatchups**: Top N counters (lowest win rate matchups, min 20 games)
+- **FetchCounterMatchups**: Top N counters (lowest win rate matchups <49%, min 10 games)
+- **FetchCounterPicks**: Champions that counter a specific enemy (win rate >51%)
 - **FetchMatchup**: Specific champion vs enemy win rate
 - **FetchTopChampionsByRole**: Meta champions by win rate per role
 
@@ -115,6 +119,7 @@ EventsOn('champselect:update', updateChampSelect);
 EventsOn('build:update', updateBuild);
 EventsOn('bans:update', updateBans);
 EventsOn('items:update', updateItems);
+EventsOn('counterpicks:update', updateCounterPicks);  // Counter picks vs enemy laner (post-ban phase)
 EventsOn('teamcomp:update', updateTeamComp);
 EventsOn('fullcomp:update', updateFullComp);
 ```
@@ -134,11 +139,13 @@ EventsOn('fullcomp:update', updateFullComp);
 - Downloads and bulk-inserts new data in a single transaction (for performance)
 - Falls back to cached data if network unavailable
 
-### Stats Provider (internal/stats/provider.go)
+### Stats Provider (internal/data/stats_queries.go)
 - Queries local SQLite instead of remote PostgreSQL
 - Uses `?` placeholders (SQLite) instead of `$1, $2` (PostgreSQL)
 - Uses `CAST(... AS REAL)` for floating-point division
 - Falls back to aggregated data across patches if current patch has no data
+- Counter matchups filter: WR < 49% (true counters only)
+- Counter picks filter: WR > 51% (champions that beat the enemy)
 
 ### Item Filtering
 - Only shows "completed" items (not components)
@@ -148,6 +155,7 @@ EventsOn('fullcomp:update', updateFullComp);
 - `lastFetchedChamp` - prevents refetching same champion
 - `lastBanFetchKey` - `"{champId}-{role}"` for bans
 - `lastItemFetchKey` - `"{champId}-{role}"` for items
+- `lastCounterFetchKey` - `"{enemyChampId}-{role}"` for counter picks
 
 ## SQLite Databases
 Located at `{UserConfigDir}/GhostDraft/`:
