@@ -9,12 +9,12 @@ export async function GET(request: Request) {
 
     // If specific role requested
     if (role) {
-      const data = fetchTopChampionsByRole(role, limit);
+      const data = await fetchTopChampionsByRole(role, limit);
       return NextResponse.json({ role, champions: data });
     }
 
     // Return all roles
-    const data = fetchAllRolesTopChampions(limit);
+    const data = await fetchAllRolesTopChampions(limit);
     return NextResponse.json(data);
   } catch (error) {
     console.error("Failed to fetch meta data:", error);

@@ -17,7 +17,7 @@ export async function GET(
     const role = searchParams.get("role") || "middle";
     const name = searchParams.get("name") || `Champion ${championId}`;
 
-    const data = fetchChampionData(championId, name, role);
+    const data = await fetchChampionData(championId, name, role);
 
     if (!data) {
       return NextResponse.json(

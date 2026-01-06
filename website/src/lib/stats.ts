@@ -1,4 +1,5 @@
 import { getDb, getCurrentPatch } from "./db";
+import { unstable_cache } from "next/cache";
 
 export interface ItemOption {
   itemId: number;
@@ -58,129 +59,99 @@ function roleToPosition(role: string): string {
   }
 }
 
-export function fetchChampionData(
-  championId: number,
-  championName: string,
-  role: string
-): BuildData | null {
-  const db = getDb();
-  const position = roleToPosition(role);
-
-  // Get total games for this champion/position
-  const totalRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats
-       WHERE champion_id = ? AND team_position = ?`
-    )
-    .get(championId, position) as { total: number };
-
-  if (!totalRow || totalRow.total === 0) {
-    return null;
-  }
-
-  const totalGames = totalRow.total;
-
-  // Build from slots
-  const build = constructBuildPathFromSlots(championId, position, totalGames);
-
-  return {
-    championId,
-    championName,
-    role,
-    builds: [build],
-  };
-}
-
 // Tier 2 boots item IDs
 const BOOTS_IDS = [3006, 3009, 3020, 3047, 3111, 3117, 3158];
 
-function constructBuildPathFromSlots(
+async function _fetchChampionData(
+  championId: number,
+  championName: string,
+  role: string
+): Promise<BuildData | null> {
+  const client = getDb();
+  const position = roleToPosition(role);
+
+  const totalResult = await client.execute({
+    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats
+          WHERE champion_id = ? AND team_position = ?`,
+    args: [championId, position],
+  });
+
+  const totalGames = (totalResult.rows[0]?.total as number) || 0;
+  if (totalGames === 0) return null;
+
+  const build = await constructBuildPathFromSlots(championId, position, totalGames);
+  return { championId, championName, role, builds: [build] };
+}
+
+async function constructBuildPathFromSlots(
   championId: number,
   position: string,
   totalGames: number
-): BuildPath {
-  const db = getDb();
+): Promise<BuildPath> {
+  const client = getDb();
 
-  const getSlotItems = (
+  const getSlotItems = async (
     slot: number,
     limit: number,
     excludeItems: number[] = [],
     excludeBoots: boolean = false
-  ): ItemOption[] => {
-    // Build exclusion clause
+  ): Promise<ItemOption[]> => {
     const excludeIds = [...excludeItems];
-    if (excludeBoots) {
-      excludeIds.push(...BOOTS_IDS);
-    }
+    if (excludeBoots) excludeIds.push(...BOOTS_IDS);
 
     let excludeClause = "";
     if (excludeIds.length > 0) {
       excludeClause = ` AND item_id NOT IN (${excludeIds.join(",")})`;
     }
 
-    const rows = db
-      .prepare(
-        `SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
-         FROM champion_item_slots
-         WHERE champion_id = ? AND team_position = ? AND build_slot = ?${excludeClause}
-         GROUP BY item_id
-         ORDER BY SUM(matches) DESC
-         LIMIT ?`
-      )
-      .all(championId, position, slot, limit) as Array<{
-      item_id: number;
-      wins: number;
-      matches: number;
-    }>;
+    const result = await client.execute({
+      sql: `SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
+            FROM champion_item_slots
+            WHERE champion_id = ? AND team_position = ? AND build_slot = ?${excludeClause}
+            GROUP BY item_id
+            ORDER BY SUM(matches) DESC
+            LIMIT ?`,
+      args: [championId, position, slot, limit],
+    });
 
-    return rows
-      .filter((r) => r.matches > 0)
+    return result.rows
+      .filter((r) => (r.matches as number) > 0)
       .map((r) => ({
-        itemId: r.item_id,
-        winRate: (r.wins / r.matches) * 100,
-        games: r.matches,
+        itemId: r.item_id as number,
+        winRate: ((r.wins as number) / (r.matches as number)) * 100,
+        games: r.matches as number,
       }));
   };
 
-  // Get best boots across all slots
-  const bootsQuery = db
-    .prepare(
-      `SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_item_slots
-       WHERE champion_id = ? AND team_position = ? AND item_id IN (${BOOTS_IDS.join(",")})
-       GROUP BY item_id
-       ORDER BY SUM(matches) DESC
-       LIMIT 1`
-    )
-    .get(championId, position) as { item_id: number; wins: number; matches: number } | undefined;
+  const bootsResult = await client.execute({
+    sql: `SELECT item_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_item_slots
+          WHERE champion_id = ? AND team_position = ? AND item_id IN (${BOOTS_IDS.join(",")})
+          GROUP BY item_id
+          ORDER BY SUM(matches) DESC
+          LIMIT 1`,
+    args: [championId, position],
+  });
 
-  const bestBoots = bootsQuery?.item_id;
-
-  // Get 2 core items (excluding boots and duplicates)
+  const bestBoots = bootsResult.rows[0]?.item_id as number | undefined;
   const coreItems: number[] = [];
   let winRate = 0;
 
   for (let slot = 1; slot <= 3; slot++) {
     if (coreItems.length >= 2) break;
-    const items = getSlotItems(slot, 1, coreItems, true); // exclude boots
+    const items = await getSlotItems(slot, 1, coreItems, true);
     if (items.length > 0) {
       coreItems.push(items[0].itemId);
-      if (coreItems.length === 1) {
-        winRate = items[0].winRate;
-      }
+      if (coreItems.length === 1) winRate = items[0].winRate;
     }
   }
 
-  // Add boots to core items if found
-  if (bestBoots) {
-    coreItems.push(bestBoots);
-  }
+  if (bestBoots) coreItems.push(bestBoots);
 
-  // Get 4th, 5th, 6th item options, excluding core items and boots
   const allExcluded = [...coreItems, ...BOOTS_IDS];
-  const fourthItemOptions = getSlotItems(4, 5, allExcluded).slice(0, 3);
-  const fifthItemOptions = getSlotItems(5, 5, allExcluded).slice(0, 3);
-  const sixthItemOptions = getSlotItems(6, 5, allExcluded).slice(0, 3);
+  const fourthItemOptions = (await getSlotItems(4, 5, allExcluded)).slice(0, 3);
+  const fifthItemOptions = (await getSlotItems(5, 5, allExcluded)).slice(0, 3);
+  const sixthItemOptions = (await getSlotItems(6, 5, allExcluded)).slice(0, 3);
 
   return {
     name: "Recommended Build",
@@ -193,316 +164,283 @@ function constructBuildPathFromSlots(
   };
 }
 
-export function fetchMatchup(
+export const fetchChampionData = unstable_cache(
+  _fetchChampionData,
+  ["champion-data"],
+  { revalidate: 3600 }
+);
+
+async function _fetchMatchup(
   championId: number,
   enemyChampionId: number,
   role: string
-): MatchupStat | null {
-  const db = getDb();
+): Promise<MatchupStat | null> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(wins), 0) as wins, COALESCE(SUM(matches), 0) as matches
-       FROM champion_matchups
-       WHERE champion_id = ? AND team_position = ? AND enemy_champion_id = ?`
-    )
-    .get(championId, position, enemyChampionId) as { wins: number; matches: number };
+  const result = await client.execute({
+    sql: `SELECT COALESCE(SUM(wins), 0) as wins, COALESCE(SUM(matches), 0) as matches
+          FROM champion_matchups
+          WHERE champion_id = ? AND team_position = ? AND enemy_champion_id = ?`,
+    args: [championId, position, enemyChampionId],
+  });
 
-  if (!row || row.matches === 0) {
-    return null;
-  }
+  const row = result.rows[0];
+  if (!row || (row.matches as number) === 0) return null;
 
   return {
     enemyChampionId,
-    wins: row.wins,
-    matches: row.matches,
-    winRate: (row.wins / row.matches) * 100,
+    wins: row.wins as number,
+    matches: row.matches as number,
+    winRate: ((row.wins as number) / (row.matches as number)) * 100,
   };
 }
 
-export function fetchAllMatchups(championId: number, role: string): MatchupStat[] {
-  const db = getDb();
+export const fetchMatchup = unstable_cache(_fetchMatchup, ["matchup"], { revalidate: 3600 });
+
+async function _fetchAllMatchups(championId: number, role: string): Promise<MatchupStat[]> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  const rows = db
-    .prepare(
-      `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_matchups
-       WHERE champion_id = ? AND team_position = ?
-       GROUP BY enemy_champion_id
-       ORDER BY SUM(matches) DESC`
-    )
-    .all(championId, position) as Array<{
-    enemy_champion_id: number;
-    wins: number;
-    matches: number;
-  }>;
+  const result = await client.execute({
+    sql: `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_matchups
+          WHERE champion_id = ? AND team_position = ?
+          GROUP BY enemy_champion_id
+          ORDER BY SUM(matches) DESC`,
+    args: [championId, position],
+  });
 
-  return rows
-    .filter((r) => r.matches > 0)
+  return result.rows
+    .filter((r) => (r.matches as number) > 0)
     .map((r) => ({
-      enemyChampionId: r.enemy_champion_id,
-      wins: r.wins,
-      matches: r.matches,
-      winRate: (r.wins / r.matches) * 100,
+      enemyChampionId: r.enemy_champion_id as number,
+      wins: r.wins as number,
+      matches: r.matches as number,
+      winRate: ((r.wins as number) / (r.matches as number)) * 100,
     }));
 }
 
-export function fetchCounterMatchups(
+export const fetchAllMatchups = unstable_cache(_fetchAllMatchups, ["all-matchups"], { revalidate: 3600 });
+
+async function _fetchCounterMatchups(
   championId: number,
   role: string,
   limit: number = 5
-): MatchupStat[] {
-  const db = getDb();
+): Promise<MatchupStat[]> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  // Counters = matchups where our win rate is < 49%
-  const rows = db
-    .prepare(
-      `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_matchups
-       WHERE champion_id = ? AND team_position = ?
-       GROUP BY enemy_champion_id
-       HAVING SUM(matches) >= 10
-          AND (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) < 0.49
-       ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) ASC
-       LIMIT ?`
-    )
-    .all(championId, position, limit) as Array<{
-    enemy_champion_id: number;
-    wins: number;
-    matches: number;
-  }>;
+  const result = await client.execute({
+    sql: `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_matchups
+          WHERE champion_id = ? AND team_position = ?
+          GROUP BY enemy_champion_id
+          HAVING SUM(matches) >= 10
+             AND (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) < 0.49
+          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) ASC
+          LIMIT ?`,
+    args: [championId, position, limit],
+  });
 
-  return rows
-    .filter((r) => r.matches > 0)
+  return result.rows
+    .filter((r) => (r.matches as number) > 0)
     .map((r) => ({
-      enemyChampionId: r.enemy_champion_id,
-      wins: r.wins,
-      matches: r.matches,
-      winRate: (r.wins / r.matches) * 100,
+      enemyChampionId: r.enemy_champion_id as number,
+      wins: r.wins as number,
+      matches: r.matches as number,
+      winRate: ((r.wins as number) / (r.matches as number)) * 100,
     }));
 }
 
-export function fetchAllChampionsByRole(role: string): ChampionWinRate[] {
-  const db = getDb();
+export const fetchCounterMatchups = unstable_cache(_fetchCounterMatchups, ["counter-matchups"], { revalidate: 3600 });
+
+async function _fetchAllChampionsByRole(role: string): Promise<ChampionWinRate[]> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  // Get total games for pick rate calculation
-  const totalRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats
-       WHERE team_position = ?`
-    )
-    .get(position) as { total: number };
+  const totalResult = await client.execute({
+    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
+    args: [position],
+  });
 
-  const totalGames = totalRow?.total || 0;
+  const totalGames = (totalResult.rows[0]?.total as number) || 0;
 
-  const rows = db
-    .prepare(
-      `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_stats
-       WHERE team_position = ?
-       GROUP BY champion_id
-       HAVING SUM(matches) >= 50
-       ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC`
-    )
-    .all(position) as Array<{
-    champion_id: number;
-    wins: number;
-    matches: number;
-  }>;
+  const result = await client.execute({
+    sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_stats
+          WHERE team_position = ?
+          GROUP BY champion_id
+          HAVING SUM(matches) >= 100
+          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC`,
+    args: [position],
+  });
 
-  return rows
-    .filter((r) => r.matches > 0)
+  return result.rows
+    .filter((r) => (r.matches as number) > 0)
     .map((r) => ({
-      championId: r.champion_id,
-      wins: r.wins,
-      matches: r.matches,
-      winRate: (r.wins / r.matches) * 100,
-      pickRate: totalGames > 0 ? (r.matches / totalGames) * 100 : 0,
+      championId: r.champion_id as number,
+      wins: r.wins as number,
+      matches: r.matches as number,
+      winRate: ((r.wins as number) / (r.matches as number)) * 100,
+      pickRate: totalGames > 0 ? ((r.matches as number) / totalGames) * 100 : 0,
     }));
 }
 
-export function fetchBestMatchups(
+export const fetchAllChampionsByRole = unstable_cache(_fetchAllChampionsByRole, ["champions-by-role"], { revalidate: 3600 });
+
+async function _fetchBestMatchups(
   championId: number,
   role: string,
   limit: number = 5
-): MatchupStat[] {
-  const db = getDb();
+): Promise<MatchupStat[]> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  // Best matchups = matchups where our win rate is > 51%
-  const rows = db
-    .prepare(
-      `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_matchups
-       WHERE champion_id = ? AND team_position = ?
-       GROUP BY enemy_champion_id
-       HAVING SUM(matches) >= 10
-          AND (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) > 0.51
-       ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
-       LIMIT ?`
-    )
-    .all(championId, position, limit) as Array<{
-    enemy_champion_id: number;
-    wins: number;
-    matches: number;
-  }>;
+  const result = await client.execute({
+    sql: `SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_matchups
+          WHERE champion_id = ? AND team_position = ?
+          GROUP BY enemy_champion_id
+          HAVING SUM(matches) >= 10
+             AND (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) > 0.51
+          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+          LIMIT ?`,
+    args: [championId, position, limit],
+  });
 
-  return rows
-    .filter((r) => r.matches > 0)
+  return result.rows
+    .filter((r) => (r.matches as number) > 0)
     .map((r) => ({
-      enemyChampionId: r.enemy_champion_id,
-      wins: r.wins,
-      matches: r.matches,
-      winRate: (r.wins / r.matches) * 100,
+      enemyChampionId: r.enemy_champion_id as number,
+      wins: r.wins as number,
+      matches: r.matches as number,
+      winRate: ((r.wins as number) / (r.matches as number)) * 100,
     }));
 }
 
-export function fetchChampionStats(
-  championId: number,
-  role: string
-): ChampionWinRate | null {
-  const db = getDb();
+export const fetchBestMatchups = unstable_cache(_fetchBestMatchups, ["best-matchups"], { revalidate: 3600 });
+
+async function _fetchChampionStats(championId: number, role: string): Promise<ChampionWinRate | null> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  // Get total games for pick rate calculation
-  const totalRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats
-       WHERE team_position = ?`
-    )
-    .get(position) as { total: number };
+  const totalResult = await client.execute({
+    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
+    args: [position],
+  });
 
-  const totalGames = totalRow?.total || 0;
+  const totalGames = (totalResult.rows[0]?.total as number) || 0;
 
-  const row = db
-    .prepare(
-      `SELECT SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_stats
-       WHERE champion_id = ? AND team_position = ?`
-    )
-    .get(championId, position) as { wins: number; matches: number } | undefined;
+  const result = await client.execute({
+    sql: `SELECT SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_stats
+          WHERE champion_id = ? AND team_position = ?`,
+    args: [championId, position],
+  });
 
-  if (!row || row.matches === 0) {
-    return null;
-  }
+  const row = result.rows[0];
+  if (!row || (row.matches as number) === 0) return null;
 
   return {
     championId,
-    wins: row.wins,
-    matches: row.matches,
-    winRate: (row.wins / row.matches) * 100,
-    pickRate: totalGames > 0 ? (row.matches / totalGames) * 100 : 0,
+    wins: row.wins as number,
+    matches: row.matches as number,
+    winRate: ((row.wins as number) / (row.matches as number)) * 100,
+    pickRate: totalGames > 0 ? ((row.matches as number) / totalGames) * 100 : 0,
   };
 }
 
-export function fetchChampionRoles(championId: number): string[] {
-  const db = getDb();
+export const fetchChampionStats = unstable_cache(_fetchChampionStats, ["champion-stats"], { revalidate: 3600 });
 
-  const rows = db
-    .prepare(
-      `SELECT team_position, SUM(matches) as matches
-       FROM champion_stats
-       WHERE champion_id = ?
-       GROUP BY team_position
-       HAVING SUM(matches) >= 50
-       ORDER BY SUM(matches) DESC`
-    )
-    .all(championId) as Array<{ team_position: string; matches: number }>;
+async function _fetchChampionRoles(championId: number): Promise<string[]> {
+  const client = getDb();
 
-  return rows.map((r) => r.team_position.toLowerCase());
+  const result = await client.execute({
+    sql: `SELECT team_position, SUM(matches) as matches
+          FROM champion_stats
+          WHERE champion_id = ?
+          GROUP BY team_position
+          HAVING SUM(matches) >= 50
+          ORDER BY SUM(matches) DESC`,
+    args: [championId],
+  });
+
+  return result.rows.map((r) => (r.team_position as string).toLowerCase());
 }
 
-export function fetchTopChampionsByRole(
-  role: string,
-  limit: number = 5
-): ChampionWinRate[] {
-  const db = getDb();
+export const fetchChampionRoles = unstable_cache(_fetchChampionRoles, ["champion-roles"], { revalidate: 3600 });
+
+async function _fetchTopChampionsByRole(role: string, limit: number = 5): Promise<ChampionWinRate[]> {
+  const client = getDb();
   const position = roleToPosition(role);
 
-  // Get total games for pick rate calculation
-  const totalRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats
-       WHERE team_position = ?`
-    )
-    .get(position) as { total: number };
+  const totalResult = await client.execute({
+    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
+    args: [position],
+  });
 
-  const totalGames = totalRow?.total || 0;
+  const totalGames = (totalResult.rows[0]?.total as number) || 0;
 
-  const rows = db
-    .prepare(
-      `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
-       FROM champion_stats
-       WHERE team_position = ?
-       GROUP BY champion_id
-       HAVING SUM(matches) >= 100
-       ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
-       LIMIT ?`
-    )
-    .all(position, limit) as Array<{
-    champion_id: number;
-    wins: number;
-    matches: number;
-  }>;
+  const result = await client.execute({
+    sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+          FROM champion_stats
+          WHERE team_position = ?
+          GROUP BY champion_id
+          HAVING SUM(matches) >= 100
+          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+          LIMIT ?`,
+    args: [position, limit],
+  });
 
-  return rows
-    .filter((r) => r.matches > 0)
+  return result.rows
+    .filter((r) => (r.matches as number) > 0)
     .map((r) => ({
-      championId: r.champion_id,
-      wins: r.wins,
-      matches: r.matches,
-      winRate: (r.wins / r.matches) * 100,
-      pickRate: totalGames > 0 ? (r.matches / totalGames) * 100 : 0,
+      championId: r.champion_id as number,
+      wins: r.wins as number,
+      matches: r.matches as number,
+      winRate: ((r.wins as number) / (r.matches as number)) * 100,
+      pickRate: totalGames > 0 ? ((r.matches as number) / totalGames) * 100 : 0,
     }));
 }
 
-export function fetchAllRolesTopChampions(
-  limit: number = 5
-): Record<string, ChampionWinRate[]> {
+export const fetchTopChampionsByRole = unstable_cache(_fetchTopChampionsByRole, ["top-champions"], { revalidate: 3600 });
+
+export async function fetchAllRolesTopChampions(limit: number = 5): Promise<Record<string, ChampionWinRate[]>> {
   const roles = ["top", "jungle", "middle", "bottom", "utility"];
   const result: Record<string, ChampionWinRate[]> = {};
-
   for (const role of roles) {
-    result[role] = fetchTopChampionsByRole(role, limit);
+    result[role] = await fetchTopChampionsByRole(role, limit);
   }
-
   return result;
 }
 
-export function getStatsInfo(): {
+async function _getStatsInfo(): Promise<{
   patch: string;
   hasData: boolean;
   championCount: number;
   matchupCount: number;
-} {
-  const db = getDb();
-  const patch = getCurrentPatch();
+}> {
+  const client = getDb();
+  const patch = await getCurrentPatch();
 
   try {
-    const champRow = db
-      .prepare("SELECT COUNT(DISTINCT champion_id) as count FROM champion_stats")
-      .get() as { count: number };
-
-    const matchupRow = db.prepare("SELECT COUNT(*) as count FROM champion_matchups").get() as {
-      count: number;
-    };
+    const champResult = await client.execute(
+      "SELECT COUNT(DISTINCT champion_id) as count FROM champion_stats"
+    );
+    const matchupResult = await client.execute(
+      "SELECT COUNT(*) as count FROM champion_matchups"
+    );
 
     return {
       patch,
-      hasData: champRow.count > 0,
-      championCount: champRow.count,
-      matchupCount: matchupRow.count,
+      hasData: (champResult.rows[0]?.count as number) > 0,
+      championCount: champResult.rows[0]?.count as number,
+      matchupCount: matchupResult.rows[0]?.count as number,
     };
   } catch {
-    return {
-      patch: "",
-      hasData: false,
-      championCount: 0,
-      matchupCount: 0,
-    };
+    return { patch: "", hasData: false, championCount: 0, matchupCount: 0 };
   }
 }
+
+export const getStatsInfo = unstable_cache(_getStatsInfo, ["stats-info"], { revalidate: 3600 });

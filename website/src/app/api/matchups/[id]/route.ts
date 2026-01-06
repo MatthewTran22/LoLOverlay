@@ -26,7 +26,7 @@ export async function GET(
         return NextResponse.json({ error: "Invalid enemy champion ID" }, { status: 400 });
       }
 
-      const matchup = fetchMatchup(championId, enemyChampionId, role);
+      const matchup = await fetchMatchup(championId, enemyChampionId, role);
       if (!matchup) {
         return NextResponse.json({ error: "No matchup data found" }, { status: 404 });
       }
@@ -36,12 +36,12 @@ export async function GET(
 
     // If counters requested
     if (counters) {
-      const data = fetchCounterMatchups(championId, role, limit);
+      const data = await fetchCounterMatchups(championId, role, limit);
       return NextResponse.json({ championId, role, counters: data });
     }
 
     // Return all matchups
-    const data = fetchAllMatchups(championId, role);
+    const data = await fetchAllMatchups(championId, role);
     return NextResponse.json({ championId, role, matchups: data });
   } catch (error) {
     console.error("Failed to fetch matchup data:", error);

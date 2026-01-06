@@ -1,5 +1,5 @@
 import { fetchAllChampionsByRole, getStatsInfo } from "@/lib/stats";
-import { checkForUpdates, hasData } from "@/lib/db";
+import { hasData } from "@/lib/db";
 import Link from "next/link";
 import type { Metadata } from "next";
 import {
@@ -30,17 +30,9 @@ export default async function StatsPage({ searchParams }: PageProps) {
   // Load Data Dragon data
   const ddragon = await getDDragon();
 
-  // Check for updates and ensure we have data
-  try {
-    if (!hasData()) {
-      await checkForUpdates();
-    }
-  } catch (error) {
-    console.error("Failed to check for updates:", error);
-  }
-
-  const statsInfo = getStatsInfo();
-  const champions = fetchAllChampionsByRole(selectedRole);
+  const statsInfo = await getStatsInfo();
+  const dataAvailable = await hasData();
+  const champions = await fetchAllChampionsByRole(selectedRole);
 
   const roles = ["top", "jungle", "middle", "bottom", "utility"];
 
@@ -78,7 +70,7 @@ export default async function StatsPage({ searchParams }: PageProps) {
         ))}
       </div>
 
-      {!statsInfo.hasData ? (
+      {!dataAvailable ? (
         <div className="text-center py-16">
           <div className="hex-card rounded-xl p-8 max-w-md mx-auto">
             <p className="text-[var(--text-secondary)] mb-4">No stats data available yet.</p>

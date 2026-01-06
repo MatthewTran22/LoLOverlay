@@ -6,7 +6,6 @@ import {
   fetchCounterMatchups,
   getStatsInfo,
 } from "@/lib/stats";
-import { checkForUpdates, hasData } from "@/lib/db";
 import Link from "next/link";
 import type { Metadata } from "next";
 import {
@@ -46,23 +45,14 @@ export default async function ChampionPage({ params, searchParams }: PageProps) 
   const champId = parseInt(championId);
   const champName = ddragon.getChampionName(champId);
 
-  // Check for updates
-  try {
-    if (!hasData()) {
-      await checkForUpdates();
-    }
-  } catch (error) {
-    console.error("Failed to check for updates:", error);
-  }
-
-  const statsInfo = getStatsInfo();
-  const availableRoles = fetchChampionRoles(champId);
+  const statsInfo = await getStatsInfo();
+  const availableRoles = await fetchChampionRoles(champId);
   const selectedRole = queryRole && availableRoles.includes(queryRole) ? queryRole : availableRoles[0] || "middle";
 
-  const champStats = fetchChampionStats(champId, selectedRole);
-  const buildData = fetchChampionData(champId, champName, selectedRole);
-  const counters = fetchCounterMatchups(champId, selectedRole, 5);
-  const bestMatchups = fetchBestMatchups(champId, selectedRole, 5);
+  const champStats = await fetchChampionStats(champId, selectedRole);
+  const buildData = await fetchChampionData(champId, champName, selectedRole);
+  const counters = await fetchCounterMatchups(champId, selectedRole, 5);
+  const bestMatchups = await fetchBestMatchups(champId, selectedRole, 5);
 
   if (!champStats) {
     return (
@@ -159,99 +149,103 @@ export default async function ChampionPage({ params, searchParams }: PageProps) 
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Build Section */}
-        {buildData && buildData.builds.length > 0 && (
-          <div className="hex-card rounded-xl overflow-hidden">
-            <div className="bg-gradient-to-r from-[var(--deep-navy)] to-[var(--arcane-blue)] px-6 py-4 border-b border-[var(--hextech-gold)]/20">
-              <h2 className="text-xl font-display font-semibold text-[var(--pale-gold)]">
-                Recommended Build
-              </h2>
-            </div>
-            <div className="p-6 space-y-6">
-              {/* Core Items */}
-              <div>
-                <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Core Items</h3>
-                <div className="flex gap-3 flex-wrap">
-                  {buildData.builds[0].coreItems.map((itemId, index) => (
-                    <div key={index} className="text-center">
-                      <div className="w-14 h-14 rounded-lg overflow-hidden border-2 border-[var(--hextech-gold)]/30 bg-[var(--arcane-blue)]/30 mb-1">
-                        <img
-                          src={ddragon.getItemIcon(itemId)}
-                          alt={ddragon.getItemName(itemId)}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                      <span className="text-xs text-[var(--text-muted)]">{index + 1}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* 4th Item Options */}
-              {buildData.builds[0].fourthItemOptions.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">4th Item Options</h3>
-                  <div className="space-y-2">
-                    {buildData.builds[0].fourthItemOptions.map((item) => (
-                      <div
-                        key={item.itemId}
-                        className="flex items-center gap-3 p-2 bg-[var(--arcane-blue)]/20 rounded-lg"
-                      >
-                        <div className="w-10 h-10 rounded overflow-hidden border border-[var(--hextech-gold)]/20">
-                          <img
-                            src={ddragon.getItemIcon(item.itemId)}
-                            alt={ddragon.getItemName(item.itemId)}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                        <span className="flex-1 text-[var(--text-primary)] text-sm">
-                          {ddragon.getItemName(item.itemId)}
-                        </span>
-                        <span className={`text-sm font-medium ${getWinRateClass(item.winRate)}`}>
-                          {item.winRate.toFixed(1)}%
-                        </span>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {item.games.toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 5th Item Options */}
-              {buildData.builds[0].fifthItemOptions.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">5th Item Options</h3>
-                  <div className="space-y-2">
-                    {buildData.builds[0].fifthItemOptions.map((item) => (
-                      <div
-                        key={item.itemId}
-                        className="flex items-center gap-3 p-2 bg-[var(--arcane-blue)]/20 rounded-lg"
-                      >
-                        <div className="w-10 h-10 rounded overflow-hidden border border-[var(--hextech-gold)]/20">
-                          <img
-                            src={ddragon.getItemIcon(item.itemId)}
-                            alt={ddragon.getItemName(item.itemId)}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                        <span className="flex-1 text-[var(--text-primary)] text-sm">
-                          {ddragon.getItemName(item.itemId)}
-                        </span>
-                        <span className={`text-sm font-medium ${getWinRateClass(item.winRate)}`}>
-                          {item.winRate.toFixed(1)}%
-                        </span>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {item.games.toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+        <div className="hex-card rounded-xl overflow-hidden">
+          <div className="bg-gradient-to-r from-[var(--deep-navy)] to-[var(--arcane-blue)] px-6 py-4 border-b border-[var(--hextech-gold)]/20">
+            <h2 className="text-xl font-display font-semibold text-[var(--pale-gold)]">
+              Recommended Build
+            </h2>
           </div>
-        )}
+          <div className="p-6 space-y-6">
+            {!buildData || buildData.builds.length === 0 || buildData.builds[0].coreItems.length === 0 ? (
+              <p className="text-[var(--text-muted)] text-center py-4">Not enough data</p>
+            ) : (
+              <>
+                {/* Core Items */}
+                <div>
+                  <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Core Items</h3>
+                  <div className="flex gap-3 flex-wrap">
+                    {buildData.builds[0].coreItems.map((itemId, index) => (
+                      <div key={index} className="text-center">
+                        <div className="w-14 h-14 rounded-lg overflow-hidden border-2 border-[var(--hextech-gold)]/30 bg-[var(--arcane-blue)]/30 mb-1">
+                          <img
+                            src={ddragon.getItemIcon(itemId)}
+                            alt={ddragon.getItemName(itemId)}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <span className="text-xs text-[var(--text-muted)]">{index + 1}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4th Item Options */}
+                {buildData.builds[0].fourthItemOptions.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">4th Item Options</h3>
+                    <div className="space-y-2">
+                      {buildData.builds[0].fourthItemOptions.map((item) => (
+                        <div
+                          key={item.itemId}
+                          className="flex items-center gap-3 p-2 bg-[var(--arcane-blue)]/20 rounded-lg"
+                        >
+                          <div className="w-10 h-10 rounded overflow-hidden border border-[var(--hextech-gold)]/20">
+                            <img
+                              src={ddragon.getItemIcon(item.itemId)}
+                              alt={ddragon.getItemName(item.itemId)}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <span className="flex-1 text-[var(--text-primary)] text-sm">
+                            {ddragon.getItemName(item.itemId)}
+                          </span>
+                          <span className={`text-sm font-medium ${getWinRateClass(item.winRate)}`}>
+                            {item.winRate.toFixed(1)}%
+                          </span>
+                          <span className="text-xs text-[var(--text-muted)]">
+                            {item.games.toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 5th Item Options */}
+                {buildData.builds[0].fifthItemOptions.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">5th Item Options</h3>
+                    <div className="space-y-2">
+                      {buildData.builds[0].fifthItemOptions.map((item) => (
+                        <div
+                          key={item.itemId}
+                          className="flex items-center gap-3 p-2 bg-[var(--arcane-blue)]/20 rounded-lg"
+                        >
+                          <div className="w-10 h-10 rounded overflow-hidden border border-[var(--hextech-gold)]/20">
+                            <img
+                              src={ddragon.getItemIcon(item.itemId)}
+                              alt={ddragon.getItemName(item.itemId)}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <span className="flex-1 text-[var(--text-primary)] text-sm">
+                            {ddragon.getItemName(item.itemId)}
+                          </span>
+                          <span className={`text-sm font-medium ${getWinRateClass(item.winRate)}`}>
+                            {item.winRate.toFixed(1)}%
+                          </span>
+                          <span className="text-xs text-[var(--text-muted)]">
+                            {item.games.toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
 
         {/* Matchups Section */}
         <div className="space-y-8">

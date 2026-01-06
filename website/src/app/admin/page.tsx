@@ -13,10 +13,9 @@ interface StatsInfo {
 export default function AdminPage() {
   const [stats, setStats] = useState<StatsInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const fetchStats = async () => {
+    setLoading(true);
     try {
       const res = await fetch("/api/stats");
       const data = await res.json();
@@ -31,40 +30,6 @@ export default function AdminPage() {
   useEffect(() => {
     fetchStats();
   }, []);
-
-  const handleUpdate = async (force: boolean) => {
-    setUpdating(true);
-    setMessage(null);
-
-    try {
-      const res = await fetch("/api/stats", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: force ? "force-update" : "update" }),
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        setStats(data);
-        setMessage({
-          type: "success",
-          text: force
-            ? `Force updated to patch ${data.patch}`
-            : data.patch
-              ? `Updated to patch ${data.patch}`
-              : "Already up to date",
-        });
-      } else {
-        setMessage({ type: "error", text: data.error || "Update failed" });
-      }
-    } catch (err) {
-      setMessage({ type: "error", text: "Failed to connect to server" });
-      console.error(err);
-    } finally {
-      setUpdating(false);
-    }
-  };
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-16">
@@ -130,62 +95,27 @@ export default function AdminPage() {
         <div className="space-y-4">
           <div>
             <button
-              onClick={() => handleUpdate(false)}
-              disabled={updating}
-              className="btn-hextech w-full disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {updating ? "Updating..." : "Check for Updates"}
-            </button>
-            <p className="text-[var(--text-muted)] text-sm mt-2">
-              Compares remote manifest version with local. Downloads only if newer.
-            </p>
-          </div>
-
-          <div>
-            <button
-              onClick={() => handleUpdate(true)}
-              disabled={updating}
-              className="btn-outline w-full disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {updating ? "Updating..." : "Force Update"}
-            </button>
-            <p className="text-[var(--text-muted)] text-sm mt-2">
-              Clears local data and re-downloads everything from remote.
-            </p>
-          </div>
-
-          <div>
-            <button
               onClick={fetchStats}
               disabled={loading}
-              className="w-full px-4 py-2 bg-[var(--arcane-blue)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--mystic-slate)] transition-colors disabled:opacity-50"
+              className="btn-hextech w-full disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Refresh Status
+              {loading ? "Loading..." : "Refresh Status"}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Message */}
-      {message && (
-        <div
-          className={`rounded-xl p-4 ${
-            message.type === "success"
-              ? "bg-green-500/10 border border-green-500/30 text-green-400"
-              : "bg-red-500/10 border border-red-500/30 text-red-400"
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
-
       {/* Info */}
-      <div className="mt-8 text-[var(--text-muted)] text-sm">
-        <p>
-          Data is fetched from:{" "}
-          <code className="text-[var(--arcane-cyan)]">
-            github.com/MatthewTran22/LoLOverlay-Data
-          </code>
+      <div className="hex-card rounded-xl p-6 bg-[var(--arcane-blue)]/20">
+        <h3 className="text-lg font-display font-semibold text-[var(--pale-gold)] mb-3">
+          Read-Only Mode
+        </h3>
+        <p className="text-[var(--text-secondary)] text-sm mb-3">
+          This website connects to a Turso database in read-only mode. Data updates are managed
+          by the Data Analyzer pipeline.
+        </p>
+        <p className="text-[var(--text-muted)] text-sm">
+          To update data, run the Data Analyzer with Turso credentials configured.
         </p>
       </div>
     </div>
