@@ -1,21 +1,22 @@
 # Data Analyzer - Match History Collection & Aggregation
 
 ## Purpose
-Collect match history data from Riot API and aggregate into static JSON files for distribution to the GhostDraft client app.
+Collect match history data from Riot API and aggregate stats. Supports two output modes:
+1. JSON export for distribution to desktop app
+2. Direct push to Turso for website consumption
 
 ## Architecture
 
 ```
-Riot API → Collector (spider) → JSONL files → Reducer → data.json + manifest.json
-                                    ↓                            ↓
-                              hot/ → warm/ → cold/         (hosted remotely)
-                                                                 ↓
-                                              Client App → Local SQLite
+Riot API → Collector (spider) → JSONL files → Reducer
+                                    ↓              ↓
+                              hot/ → warm/ → cold/ ├──→ data.json (desktop app)
+                                                   └──→ Turso DB (website)
 ```
 
 ### Components
 1. **Collector** - Spider that crawls match history from Riot API
-2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON (and optionally PostgreSQL)
+2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON and optionally pushes to Turso
 3. **Server** - Web UI for viewing collected data (optional)
 
 ## Quick Start
@@ -28,10 +29,12 @@ go run cmd/pipeline/main.go --riot-id="Player#NA1" --max-players=100
 # 1. Collect match data (spider from a starting player)
 go run cmd/collector/main.go --riot-id="Player#NA1"
 
-# 2. Process collected data and export to JSON
-go run cmd/reducer/main.go --output-dir=./export
+# 2. Process collected data (exports JSON + pushes to Turso by default)
+go run cmd/reducer/main.go
 
-# 3. Upload export/data.json to your CDN and update manifest.json
+# Both JSON export and Turso push happen by default:
+# - JSON export: always runs (use --skip-json to disable)
+# - Turso push: runs if TURSO_DATABASE_URL is set (use --skip-turso to disable)
 ```
 
 ### Pipeline Options
@@ -47,7 +50,9 @@ go run cmd/pipeline/main.go \
 ### Reducer Options
 ```bash
 go run cmd/reducer/main.go \
-  --output-dir=./export      # Directory for JSON output (default: ./export)
+  --output-dir=./export \    # Directory for JSON output (default: ./export)
+  --skip-json                # Skip JSON export
+  --skip-turso               # Skip Turso push
 ```
 
 ## Docker UI
@@ -80,6 +85,10 @@ Create `.env` file:
 RIOT_API_KEY=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 BLOB_STORAGE_PATH=./data
 DATABASE_URL=postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable
+
+# Turso (for --turso flag)
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-token
 ```
 
 ## Storage Lifecycle
@@ -98,7 +107,7 @@ data-analyzer/
 ├── cmd/
 │   ├── collector/       # Spider crawler CLI
 │   │   └── main.go
-│   ├── reducer/         # JSONL → PostgreSQL aggregator
+│   ├── reducer/         # JSONL → JSON/Turso aggregator
 │   │   └── main.go
 │   └── server/          # Web UI server
 │       └── main.go
@@ -109,8 +118,9 @@ data-analyzer/
 │   ├── storage/         # JSONL file rotation
 │   │   ├── rotator.go   # FileRotator implementation
 │   │   └── types.go     # RawMatch struct
-│   └── db/              # PostgreSQL queries
-│       ├── db.go        # Connection pool
+│   └── db/              # Database integrations
+│       ├── db.go        # PostgreSQL connection pool
+│       ├── turso.go     # Turso client for website DB
 │       └── queries*.go  # Query functions
 ├── web/                 # Static HTML/CSS for server
 └── docker-compose.yml   # PostgreSQL container

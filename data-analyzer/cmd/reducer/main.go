@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,12 +17,16 @@ import (
 	"strings"
 	"time"
 
+	"data-analyzer/internal/db"
+
 	"github.com/joho/godotenv"
 )
 
 // CLI flags
 var (
-	outputDir = flag.String("output-dir", "./export", "Directory to output data.json")
+	outputDir  = flag.String("output-dir", "./export", "Directory to output data.json")
+	skipTurso  = flag.Bool("skip-turso", false, "Skip pushing to Turso")
+	skipJSON   = flag.Bool("skip-json", false, "Skip JSON export")
 )
 
 const DDRAGON_VERSION = "14.24.1"
@@ -330,12 +335,25 @@ func main() {
 	fmt.Printf("Matchup stats: %d\n", len(allMatchupStats))
 	fmt.Printf("Detected patch: %s\n", detectedPatch)
 
-	// Export to JSON
-	fmt.Printf("\n=== Exporting JSON ===\n")
-	if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
-		log.Fatalf("Failed to export JSON: %v", err)
+	// Export to JSON (default: enabled)
+	if !*skipJSON {
+		fmt.Printf("\n=== Exporting JSON ===\n")
+		if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
+			log.Fatalf("Failed to export JSON: %v", err)
+		}
+		fmt.Printf("Exported to: %s\n", *outputDir)
 	}
-	fmt.Printf("Exported to: %s\n", *outputDir)
+
+	// Push to Turso (default: enabled if TURSO_DATABASE_URL is set)
+	if !*skipTurso && os.Getenv("TURSO_DATABASE_URL") != "" {
+		fmt.Printf("\n=== Pushing to Turso ===\n")
+		if err := pushToTurso(detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
+			log.Fatalf("Failed to push to Turso: %v", err)
+		}
+		fmt.Println("Successfully pushed to Turso")
+	} else if !*skipTurso && os.Getenv("TURSO_DATABASE_URL") == "" {
+		fmt.Println("\n[Skipping Turso push - TURSO_DATABASE_URL not set]")
+	}
 
 	// Archive files after successful processing
 	for _, filePath := range files {
@@ -674,5 +692,120 @@ func exportToJSON(outputDir, patch string,
 	fmt.Printf("  Wrote data.json: %d champion stats, %d item stats, %d item slot stats, %d matchup stats\n",
 		len(champStatsJSON), len(itemStatsJSON), len(itemSlotStatsJSON), len(matchupStatsJSON))
 	fmt.Printf("  SHA256: %s\n", dataSha256)
+	return nil
+}
+
+// pushToTurso pushes aggregated data to Turso database
+func pushToTurso(patch string,
+	championStats map[ChampionStatsKey]*ChampionStats,
+	itemStats map[ItemStatsKey]*ItemStats,
+	itemSlotStats map[ItemSlotStatsKey]*ItemSlotStats,
+	matchupStats map[MatchupStatsKey]*MatchupStats) error {
+
+	// Get Turso credentials from environment
+	tursoURL := os.Getenv("TURSO_DATABASE_URL")
+	tursoToken := os.Getenv("TURSO_AUTH_TOKEN")
+
+	if tursoURL == "" {
+		return fmt.Errorf("TURSO_DATABASE_URL environment variable not set")
+	}
+
+	fmt.Printf("Connecting to Turso: %s\n", tursoURL)
+
+	client, err := db.NewTursoClient(tursoURL, tursoToken)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Turso: %w", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Create tables if they don't exist
+	fmt.Println("Creating tables...")
+	if err := client.CreateTables(ctx); err != nil {
+		return fmt.Errorf("failed to create tables: %w", err)
+	}
+
+	// Clear existing data
+	fmt.Println("Clearing existing data...")
+	if err := client.ClearData(ctx); err != nil {
+		return fmt.Errorf("failed to clear data: %w", err)
+	}
+
+	// Set data version
+	fmt.Println("Setting data version...")
+	if err := client.SetDataVersion(ctx, patch); err != nil {
+		return fmt.Errorf("failed to set data version: %w", err)
+	}
+
+	// Insert champion stats
+	fmt.Printf("Inserting %d champion stats...\n", len(championStats))
+	champStatsList := make([]db.ChampionStat, 0, len(championStats))
+	for k, v := range championStats {
+		champStatsList = append(champStatsList, db.ChampionStat{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+	if err := client.InsertChampionStats(ctx, champStatsList); err != nil {
+		return fmt.Errorf("failed to insert champion stats: %w", err)
+	}
+
+	// Insert champion items
+	fmt.Printf("Inserting %d champion items...\n", len(itemStats))
+	itemStatsList := make([]db.ChampionItem, 0, len(itemStats))
+	for k, v := range itemStats {
+		itemStatsList = append(itemStatsList, db.ChampionItem{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			ItemID:       k.ItemID,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+	if err := client.InsertChampionItems(ctx, itemStatsList); err != nil {
+		return fmt.Errorf("failed to insert champion items: %w", err)
+	}
+
+	// Insert champion item slots
+	fmt.Printf("Inserting %d champion item slots...\n", len(itemSlotStats))
+	slotStatsList := make([]db.ChampionItemSlot, 0, len(itemSlotStats))
+	for k, v := range itemSlotStats {
+		slotStatsList = append(slotStatsList, db.ChampionItemSlot{
+			Patch:        k.Patch,
+			ChampionID:   k.ChampionID,
+			TeamPosition: k.TeamPosition,
+			ItemID:       k.ItemID,
+			BuildSlot:    k.BuildSlot,
+			Wins:         v.Wins,
+			Matches:      v.Matches,
+		})
+	}
+	if err := client.InsertChampionItemSlots(ctx, slotStatsList); err != nil {
+		return fmt.Errorf("failed to insert champion item slots: %w", err)
+	}
+
+	// Insert champion matchups
+	fmt.Printf("Inserting %d champion matchups...\n", len(matchupStats))
+	matchupStatsList := make([]db.ChampionMatchup, 0, len(matchupStats))
+	for k, v := range matchupStats {
+		matchupStatsList = append(matchupStatsList, db.ChampionMatchup{
+			Patch:           k.Patch,
+			ChampionID:      k.ChampionID,
+			TeamPosition:    k.TeamPosition,
+			EnemyChampionID: k.EnemyChampionID,
+			Wins:            v.Wins,
+			Matches:         v.Matches,
+		})
+	}
+	if err := client.InsertChampionMatchups(ctx, matchupStatsList); err != nil {
+		return fmt.Errorf("failed to insert champion matchups: %w", err)
+	}
+
+	fmt.Println("Turso push complete!")
 	return nil
 }
