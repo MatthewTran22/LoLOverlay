@@ -27,6 +27,7 @@ type StatsDB struct {
 // Manifest represents the remote manifest.json structure
 type Manifest struct {
 	Version    string `json:"version"`
+	MinPatch   string `json:"min_patch"`
 	DataURL    string `json:"data_url"`
 	DataSha256 string `json:"data_sha256"`
 	UpdatedAt  string `json:"updated_at"`
@@ -233,6 +234,17 @@ func (s *StatsDB) CheckForUpdates(manifestURL string) error {
 		return fmt.Errorf("failed to download and import data: %w", err)
 	}
 
+	// Cleanup old patches if minPatch is specified
+	if manifest.MinPatch != "" {
+		fmt.Printf("[Stats] Cleaning up patches older than: %s\n", manifest.MinPatch)
+		deleted, err := s.deleteOldPatches(manifest.MinPatch)
+		if err != nil {
+			fmt.Printf("[Stats] Warning: failed to cleanup old patches: %v\n", err)
+		} else if deleted > 0 {
+			fmt.Printf("[Stats] Deleted %d old records\n", deleted)
+		}
+	}
+
 	// Reload current patch from database after import
 	s.loadCurrentPatch()
 	fmt.Printf("[Stats] Updated to version: %s\n", s.currentPatch)
@@ -394,6 +406,34 @@ func (s *StatsDB) HasData() bool {
 func (s *StatsDB) clearLocalData() {
 	s.db.Exec("DELETE FROM data_version")
 	s.currentPatch = ""
+}
+
+// deleteOldPatches removes data from patches older than minPatch
+// Uses a single transaction for all deletes to minimize disk I/O
+func (s *StatsDB) deleteOldPatches(minPatch string) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	tables := []string{"champion_stats", "champion_items", "champion_item_slots", "champion_matchups"}
+	var totalDeleted int64
+
+	for _, table := range tables {
+		result, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE patch < ?", table), minPatch)
+		if err != nil {
+			return 0, fmt.Errorf("failed to delete from %s: %w", table, err)
+		}
+		rows, _ := result.RowsAffected()
+		totalDeleted += rows
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return totalDeleted, nil
 }
 
 // ForceUpdate clears local version and triggers a fresh download

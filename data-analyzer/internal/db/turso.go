@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
@@ -106,15 +107,22 @@ func (c *TursoClient) CreateTables(ctx context.Context) error {
 	return nil
 }
 
-// ClearData deletes all existing data
+// ClearData deletes all existing data using a single batched transaction
 func (c *TursoClient) ClearData(ctx context.Context) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	tables := []string{"data_version", "champion_stats", "champion_items", "champion_item_slots", "champion_matchups"}
 	for _, table := range tables {
-		if _, err := c.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", table)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", table)); err != nil {
 			return fmt.Errorf("failed to clear %s: %w", table, err)
 		}
 	}
-	return nil
+
+	return tx.Commit()
 }
 
 // SetDataVersion sets the current patch version
@@ -165,9 +173,19 @@ type ChampionMatchup struct {
 	Matches         int
 }
 
-// InsertChampionStats inserts champion stats in batches
+const batchSize = 100
+
+// InsertChampionStats inserts champion stats using multi-value INSERT
 func (c *TursoClient) InsertChampionStats(ctx context.Context, stats []ChampionStat) error {
-	const batchSize = 100
+	if len(stats) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	for i := 0; i < len(stats); i += batchSize {
 		end := i + batchSize
@@ -176,38 +194,38 @@ func (c *TursoClient) InsertChampionStats(ctx context.Context, stats []ChampionS
 		}
 		batch := stats[i:end]
 
-		tx, err := c.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
+		// Build multi-value INSERT: INSERT INTO table VALUES (?,?,?), (?,?,?), ...
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, 0, len(batch)*5)
+
+		for j, s := range batch {
+			placeholders[j] = "(?, ?, ?, ?, ?)"
+			args = append(args, s.Patch, s.ChampionID, s.TeamPosition, s.Wins, s.Matches)
 		}
 
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO champion_stats (patch, champion_id, team_position, wins, matches) VALUES (?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
+		query := fmt.Sprintf(
+			"INSERT INTO champion_stats (patch, champion_id, team_position, wins, matches) VALUES %s",
+			strings.Join(placeholders, ", "))
 
-		for _, s := range batch {
-			if _, err := stmt.ExecContext(ctx, s.Patch, s.ChampionID, s.TeamPosition, s.Wins, s.Matches); err != nil {
-				stmt.Close()
-				tx.Rollback()
-				return err
-			}
-		}
-
-		stmt.Close()
-		if err := tx.Commit(); err != nil {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
-// InsertChampionItems inserts champion items in batches
+// InsertChampionItems inserts champion items using multi-value INSERT
 func (c *TursoClient) InsertChampionItems(ctx context.Context, items []ChampionItem) error {
-	const batchSize = 100
+	if len(items) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	for i := 0; i < len(items); i += batchSize {
 		end := i + batchSize
@@ -216,38 +234,37 @@ func (c *TursoClient) InsertChampionItems(ctx context.Context, items []ChampionI
 		}
 		batch := items[i:end]
 
-		tx, err := c.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, 0, len(batch)*6)
+
+		for j, item := range batch {
+			placeholders[j] = "(?, ?, ?, ?, ?, ?)"
+			args = append(args, item.Patch, item.ChampionID, item.TeamPosition, item.ItemID, item.Wins, item.Matches)
 		}
 
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO champion_items (patch, champion_id, team_position, item_id, wins, matches) VALUES (?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
+		query := fmt.Sprintf(
+			"INSERT INTO champion_items (patch, champion_id, team_position, item_id, wins, matches) VALUES %s",
+			strings.Join(placeholders, ", "))
 
-		for _, item := range batch {
-			if _, err := stmt.ExecContext(ctx, item.Patch, item.ChampionID, item.TeamPosition, item.ItemID, item.Wins, item.Matches); err != nil {
-				stmt.Close()
-				tx.Rollback()
-				return err
-			}
-		}
-
-		stmt.Close()
-		if err := tx.Commit(); err != nil {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
-// InsertChampionItemSlots inserts champion item slots in batches
+// InsertChampionItemSlots inserts champion item slots using multi-value INSERT
 func (c *TursoClient) InsertChampionItemSlots(ctx context.Context, slots []ChampionItemSlot) error {
-	const batchSize = 100
+	if len(slots) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	for i := 0; i < len(slots); i += batchSize {
 		end := i + batchSize
@@ -256,38 +273,37 @@ func (c *TursoClient) InsertChampionItemSlots(ctx context.Context, slots []Champ
 		}
 		batch := slots[i:end]
 
-		tx, err := c.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, 0, len(batch)*7)
+
+		for j, slot := range batch {
+			placeholders[j] = "(?, ?, ?, ?, ?, ?, ?)"
+			args = append(args, slot.Patch, slot.ChampionID, slot.TeamPosition, slot.ItemID, slot.BuildSlot, slot.Wins, slot.Matches)
 		}
 
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO champion_item_slots (patch, champion_id, team_position, item_id, build_slot, wins, matches) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
+		query := fmt.Sprintf(
+			"INSERT INTO champion_item_slots (patch, champion_id, team_position, item_id, build_slot, wins, matches) VALUES %s",
+			strings.Join(placeholders, ", "))
 
-		for _, slot := range batch {
-			if _, err := stmt.ExecContext(ctx, slot.Patch, slot.ChampionID, slot.TeamPosition, slot.ItemID, slot.BuildSlot, slot.Wins, slot.Matches); err != nil {
-				stmt.Close()
-				tx.Rollback()
-				return err
-			}
-		}
-
-		stmt.Close()
-		if err := tx.Commit(); err != nil {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
-// InsertChampionMatchups inserts champion matchups in batches
+// InsertChampionMatchups inserts champion matchups using multi-value INSERT
 func (c *TursoClient) InsertChampionMatchups(ctx context.Context, matchups []ChampionMatchup) error {
-	const batchSize = 100
+	if len(matchups) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	for i := 0; i < len(matchups); i += batchSize {
 		end := i + batchSize
@@ -296,31 +312,49 @@ func (c *TursoClient) InsertChampionMatchups(ctx context.Context, matchups []Cha
 		}
 		batch := matchups[i:end]
 
-		tx, err := c.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, 0, len(batch)*6)
+
+		for j, m := range batch {
+			placeholders[j] = "(?, ?, ?, ?, ?, ?)"
+			args = append(args, m.Patch, m.ChampionID, m.TeamPosition, m.EnemyChampionID, m.Wins, m.Matches)
 		}
 
-		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches) VALUES (?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
+		query := fmt.Sprintf(
+			"INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches) VALUES %s",
+			strings.Join(placeholders, ", "))
 
-		for _, m := range batch {
-			if _, err := stmt.ExecContext(ctx, m.Patch, m.ChampionID, m.TeamPosition, m.EnemyChampionID, m.Wins, m.Matches); err != nil {
-				stmt.Close()
-				tx.Rollback()
-				return err
-			}
-		}
-
-		stmt.Close()
-		if err := tx.Commit(); err != nil {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
+}
+
+// DeleteOldPatches removes data from patches older than minPatch using a single transaction
+func (c *TursoClient) DeleteOldPatches(ctx context.Context, minPatch string) (int64, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	tables := []string{"champion_stats", "champion_items", "champion_item_slots", "champion_matchups"}
+	var totalDeleted int64
+
+	for _, table := range tables {
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE patch < ?", table), minPatch)
+		if err != nil {
+			return 0, fmt.Errorf("failed to delete from %s: %w", table, err)
+		}
+		rows, _ := result.RowsAffected()
+		totalDeleted += rows
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return totalDeleted, nil
 }

@@ -347,7 +347,8 @@ func main() {
 	// Push to Turso (default: enabled if TURSO_DATABASE_URL is set)
 	if !*skipTurso && os.Getenv("TURSO_DATABASE_URL") != "" {
 		fmt.Printf("\n=== Pushing to Turso ===\n")
-		if err := pushToTurso(detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
+		minPatch := calculateMinPatch(detectedPatch)
+		if err := pushToTurso(detectedPatch, minPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
 			log.Fatalf("Failed to push to Turso: %v", err)
 		}
 		fmt.Println("Successfully pushed to Turso")
@@ -546,6 +547,28 @@ func normalizePatch(version string) string {
 	return version
 }
 
+// calculateMinPatch returns the minimum patch to keep (current - 3)
+// e.g., if current is "15.24", returns "15.21"
+func calculateMinPatch(currentPatch string) string {
+	parts := strings.Split(currentPatch, ".")
+	if len(parts) < 2 {
+		return currentPatch
+	}
+
+	var major, minor int
+	fmt.Sscanf(parts[0], "%d", &major)
+	fmt.Sscanf(parts[1], "%d", &minor)
+
+	// Subtract 3 from minor, handling year rollover
+	minor -= 3
+	for minor < 1 {
+		minor += 24 // Assuming ~24 patches per year
+		major--
+	}
+
+	return fmt.Sprintf("%d.%d", major, minor)
+}
+
 // deduplicateItems returns unique item IDs from the inventory
 func deduplicateItems(items ...int) []int {
 	seen := make(map[int]bool)
@@ -599,7 +622,15 @@ func archiveFile(srcPath, coldDir string) error {
 	return nil
 }
 
-// exportToJSON exports aggregated data to data.json
+// ManifestJSON represents the manifest.json structure
+type ManifestJSON struct {
+	Version   string `json:"version"`
+	MinPatch  string `json:"min_patch"`
+	DataURL   string `json:"data_url"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// exportToJSON exports aggregated data to data.json and manifest.json
 func exportToJSON(outputDir, patch string,
 	championStats map[ChampionStatsKey]*ChampionStats,
 	itemStats map[ItemStatsKey]*ItemStats,
@@ -610,6 +641,9 @@ func exportToJSON(outputDir, patch string,
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
+
+	minPatch := calculateMinPatch(patch)
+	fmt.Printf("  Current patch: %s, Min patch to keep: %s\n", patch, minPatch)
 
 	// Convert maps to JSON arrays
 	var champStatsJSON []ChampionStatJSON
@@ -692,11 +726,34 @@ func exportToJSON(outputDir, patch string,
 	fmt.Printf("  Wrote data.json: %d champion stats, %d item stats, %d item slot stats, %d matchup stats\n",
 		len(champStatsJSON), len(itemStatsJSON), len(itemSlotStatsJSON), len(matchupStatsJSON))
 	fmt.Printf("  SHA256: %s\n", dataSha256)
+
+	// Write manifest.json
+	manifest := ManifestJSON{
+		Version:   patch,
+		MinPatch:  minPatch,
+		DataURL:   "", // To be filled in by user when uploading
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	manifestPath := filepath.Join(outputDir, "manifest.json")
+	manifestFile, err := os.Create(manifestPath)
+	if err != nil {
+		return fmt.Errorf("failed to create manifest.json: %w", err)
+	}
+	defer manifestFile.Close()
+
+	manifestEncoder := json.NewEncoder(manifestFile)
+	manifestEncoder.SetIndent("", "  ")
+	if err := manifestEncoder.Encode(manifest); err != nil {
+		return fmt.Errorf("failed to write manifest.json: %w", err)
+	}
+
+	fmt.Printf("  Wrote manifest.json: version=%s, min_patch=%s\n", patch, minPatch)
 	return nil
 }
 
-// pushToTurso pushes aggregated data to Turso database
-func pushToTurso(patch string,
+// pushToTurso pushes aggregated data to Turso database and cleans up old patches
+func pushToTurso(patch, minPatch string,
 	championStats map[ChampionStatsKey]*ChampionStats,
 	itemStats map[ItemStatsKey]*ItemStats,
 	itemSlotStats map[ItemSlotStatsKey]*ItemSlotStats,
@@ -805,6 +862,14 @@ func pushToTurso(patch string,
 	if err := client.InsertChampionMatchups(ctx, matchupStatsList); err != nil {
 		return fmt.Errorf("failed to insert champion matchups: %w", err)
 	}
+
+	// Clean up old patches
+	fmt.Printf("Cleaning up patches older than %s...\n", minPatch)
+	deleted, err := client.DeleteOldPatches(ctx, minPatch)
+	if err != nil {
+		return fmt.Errorf("failed to delete old patches: %w", err)
+	}
+	fmt.Printf("Deleted %d old records\n", deleted)
 
 	fmt.Println("Turso push complete!")
 	return nil

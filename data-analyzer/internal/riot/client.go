@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -184,6 +185,49 @@ func (c *Client) GetTimeline(ctx context.Context, matchID string) (*TimelineResp
 	var timeline TimelineResponse
 	err := c.doRequest(ctx, url, &timeline)
 	return &timeline, err
+}
+
+// GetCurrentPatch fetches the current game patch from Data Dragon
+func GetCurrentPatch(ctx context.Context) (string, error) {
+	url := "https://ddragon.leagueoflegends.com/api/versions.json"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Data Dragon returned status %d", resp.StatusCode)
+	}
+
+	var versions []string
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return "", err
+	}
+
+	if len(versions) == 0 {
+		return "", fmt.Errorf("no versions returned from Data Dragon")
+	}
+
+	// Return normalized patch (e.g., "14.24.1" -> "14.24")
+	return NormalizePatch(versions[0]), nil
+}
+
+// NormalizePatch converts a full version string to major.minor format
+// e.g., "14.24.448.1234" -> "14.24"
+func NormalizePatch(version string) string {
+	parts := strings.Split(version, ".")
+	if len(parts) >= 2 {
+		return parts[0] + "." + parts[1]
+	}
+	return version
 }
 
 // ExtractBuildOrder extracts item purchase order for a participant from timeline

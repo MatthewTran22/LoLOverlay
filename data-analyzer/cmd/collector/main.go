@@ -96,6 +96,13 @@ func main() {
 		log.Fatalf("Failed to create Riot client: %v", err)
 	}
 
+	// Fetch current patch from Data Dragon
+	currentPatch, err := riot.GetCurrentPatch(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get current patch: %v", err)
+	}
+	fmt.Printf("Current patch: %s (only collecting matches from this patch)\n", currentPatch)
+
 	// Get starting PUUID
 	var startingPUUID string
 	if *riotID != "" {
@@ -145,7 +152,6 @@ func main() {
 		currentPUUID := queue[0]
 		queue = queue[1:]
 
-		playerCount++
 		elapsed := time.Since(startTime)
 
 		fmt.Printf("\n[Player %d/%d] [%s elapsed] Processing: %s\n",
@@ -161,7 +167,10 @@ func main() {
 
 		// Process each match
 		matchesThisPlayer := 0
-		for j, matchID := range matchIDs {
+		currentPatchMatches := 0
+		newPlayersFromThisUser := []string{} // Buffer new players, only add if mostly current patch
+
+		for _, matchID := range matchIDs {
 			// Check for cancellation
 			select {
 			case <-ctx.Done():
@@ -172,12 +181,9 @@ func main() {
 
 			// Bloom filter deduplication check
 			if visitedMatches.TestString(matchID) {
-				fmt.Printf("  [%d/%d] Match %s already visited, skipping\n", j+1, len(matchIDs), matchID)
 				continue
 			}
 			visitedMatches.AddString(matchID)
-
-			fmt.Printf("  [%d/%d] Fetching match %s...\n", j+1, len(matchIDs), matchID)
 
 			// Fetch match details
 			match, err := client.GetMatch(ctx, matchID)
@@ -185,6 +191,15 @@ func main() {
 				log.Printf("    Failed to fetch match: %v", err)
 				continue
 			}
+
+			// Check if match is from current patch
+			// Matches are ordered most recent first, so if we hit an old patch,
+			// all remaining matches will also be old - break early to save API calls
+			matchPatch := riot.NormalizePatch(match.Info.GameVersion)
+			if matchPatch != currentPatch {
+				break
+			}
+			currentPatchMatches++
 
 			// Fetch timeline for build order
 			timeline, err := client.GetTimeline(ctx, matchID)
@@ -227,10 +242,9 @@ func main() {
 					continue
 				}
 
-				// Add new players to queue
+				// Buffer new players (will add to queue only if user has mostly current patch matches)
 				if !visitedPUUIDs.TestString(participant.PUUID) {
-					visitedPUUIDs.AddString(participant.PUUID)
-					queue = append(queue, participant.PUUID)
+					newPlayersFromThisUser = append(newPlayersFromThisUser, participant.PUUID)
 				}
 			}
 
@@ -241,14 +255,30 @@ func main() {
 
 			matchesThisPlayer++
 			totalMatchesWritten++
-			fmt.Printf("    Saved match with %d participants\n", len(match.Info.Participants))
 		}
 
-		// Show stats
-		matchesInFile, currentFileName := rotator.Stats()
-		fmt.Printf("  Matches this player: %d, Total written: %d\n", matchesThisPlayer, totalMatchesWritten)
-		fmt.Printf("  Current file: %s (%d matches)\n", currentFileName, matchesInFile)
-		fmt.Printf("  Queue size: %d\n", len(queue))
+		// Always add co-players from current patch games (they might be active)
+		for _, puuid := range newPlayersFromThisUser {
+			if !visitedPUUIDs.TestString(puuid) {
+				visitedPUUIDs.AddString(puuid)
+				queue = append(queue, puuid)
+			}
+		}
+
+		// Only count this player towards max if they had mostly current patch matches
+		totalMatches := len(matchIDs)
+		isActive := totalMatches > 0 && currentPatchMatches*2 >= totalMatches
+		if isActive {
+			playerCount++
+		}
+
+		// Summary log for this player
+		status := "ACTIVE"
+		if !isActive {
+			status = "STALE"
+		}
+		fmt.Printf("  [%s] %d matches collected, %d total, queue: %d\n",
+			status, matchesThisPlayer, totalMatchesWritten, len(queue))
 	}
 
 shutdown:

@@ -10,3 +10,4 @@ data-analyzer/.env
 
 # Collected match data
 data-analyzer/data/
+data-analyzer/export/

@@ -16,7 +16,7 @@ Riot API → Collector (spider) → JSONL files → Reducer
 
 ### Components
 1. **Collector** - Spider that crawls match history from Riot API
-2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON and optionally pushes to Turso
+2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON and pushes to Turso
 3. **Server** - Web UI for viewing collected data (optional)
 
 ## Quick Start
@@ -42,7 +42,7 @@ go run cmd/reducer/main.go
 go run cmd/pipeline/main.go \
   --riot-id="Player#NA1" \  # Starting player (required)
   --count=20 \              # Matches per player (default: 20)
-  --max-players=100 \       # Max players to spider (default: 100)
+  --max-players=100 \       # Max active players to collect (default: 100)
   --output-dir=./export \   # Output directory (default: ./export)
   --reduce-only             # Skip collection, only run reducer
 ```
@@ -55,41 +55,111 @@ go run cmd/reducer/main.go \
   --skip-turso               # Skip Turso push
 ```
 
-## Docker UI
-
-Run the pipeline from a web UI:
-
-```bash
-# 1. Create .env file with your Riot API key
-echo "RIOT_API_KEY=RGAPI-xxxxx" > .env
-
-# 2. Build and start the UI
-docker-compose up pipeline --build
-
-# 3. Open http://localhost:8080
-```
-
-The UI provides:
-- Form to input Riot ID and collection settings
-- Real-time streaming output via SSE
-- "Reduce only" mode to skip collection and just run the reducer
-- Status display for API key and storage path
-
-Data is persisted to local volumes:
-- `./data/` - Raw JSONL match data (hot/warm/cold)
-- `./export/` - Generated data.json output
-
 ## Environment Variables
 Create `.env` file:
 ```
 RIOT_API_KEY=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 BLOB_STORAGE_PATH=./data
-DATABASE_URL=postgres://analyzer:analyzer123@localhost:5432/lol_matches?sslmode=disable
 
-# Turso (for --turso flag)
+# Turso (runs by default if set)
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-token
 ```
+
+## Collection Strategy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         COLLECTOR                                │
+└─────────────────────────────────────────────────────────────────┘
+
+1. STARTUP
+   ├── Load .env (RIOT_API_KEY, BLOB_STORAGE_PATH)
+   ├── Fetch current patch from Data Dragon
+   ├── Create file rotator (writes to hot/)
+   └── Resolve starting player (--riot-id → PUUID)
+
+2. SPIDER LOOP (while queue not empty AND activePlayerCount < max)
+   ├── Pop player from queue
+   ├── Fetch 20 most recent ranked match IDs (1 API call)
+   │
+   └── For each match (newest first):
+       ├── Skip if already visited (bloom filter)
+       ├── Fetch match details (1 API call)
+       ├── If old patch → BREAK early (skip remaining matches)
+       ├── Fetch timeline (1 API call)
+       ├── Write 10 participants to JSONL
+       └── Buffer co-players
+
+   └── After matches:
+       ├── ALWAYS add co-players to queue (they might be active)
+       └── If ≥50% current patch → count as active player
+           If <50% current patch → don't count (stale player)
+
+3. FILE ROTATION → hot/*.jsonl → warm/*.jsonl (at 1000 matches)
+
+4. SHUTDOWN → Flush to warm/
+```
+
+### Key Optimizations
+- **Early break**: Once we hit an old patch match, skip remaining (they're older)
+- **Stale player handling**: Players with <50% current patch matches don't count towards max-players limit, but their co-players are still queued (they might be active)
+- **API efficiency**: 1 + (2 × current patch games) API calls per player
+
+### API Calls Per Player
+| Scenario | API Calls |
+|----------|-----------|
+| 20 current patch games | 1 + 40 = 41 |
+| 10 current patch games | 1 + 21 = 22 |
+| 3 current patch games | 1 + 7 = 8 |
+
+## Reducer Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          REDUCER                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+1. LOAD
+   ├── Fetch completed items from Data Dragon
+   └── Scan warm/*.jsonl files
+
+2. AGGREGATE (per file)
+   ├── Parse JSONL records
+   ├── Normalize patch (15.24.734 → 15.24)
+   ├── Aggregate champion stats, items, item slots
+   └── Calculate matchups (group by matchId, find lane opponents)
+
+3. EXPORT JSON
+   ├── Write data.json (all stats)
+   └── Write manifest.json (version, min_patch)
+
+4. PUSH TO TURSO
+   ├── Create tables + indexes
+   ├── Clear existing data (1 transaction)
+   ├── Set data version
+   ├── Insert all tables (multi-value INSERTs, 100 rows/statement)
+   └── Delete old patches (1 transaction, WHERE patch < min_patch)
+
+5. ARCHIVE → warm/*.jsonl → cold/*.jsonl.gz
+```
+
+### Reducer Features
+- **Patch normalization**: `14.24.448` → `14.24`
+- **Build order tracking**: Uses `buildOrder` field to track item purchase order (slots 1-6)
+- **Item deduplication**: Only counts unique items per player
+- **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
+- **Matchup calculation**: Groups participants by matchId to find lane opponents
+- **JSON Export**: Aggregates ALL files together and exports to data.json + manifest.json
+- **Old patch cleanup**: Deletes data older than current patch - 3 (e.g., if 15.24, deletes 15.21 and older)
+- **Archiving**: Compresses processed files to cold/ with gzip
+
+### Turso Batching
+- **Multi-value INSERT**: 100 rows per SQL statement (not 100 separate INSERTs)
+- **Single transaction per table**: All inserts for a table in one transaction
+- **Batched deletes**: All 4 table deletes in one transaction
+
+For 40k rows: ~400 SQL statements instead of ~40,000.
 
 ## Storage Lifecycle
 - **hot/** - Active writes (current JSONL file being written)
@@ -98,121 +168,83 @@ TURSO_AUTH_TOKEN=your-token
 
 ### File Rotation Triggers
 - 1,000 matches (10,000 participant records) per file
-- 1 hour max file age
 - Graceful shutdown (Ctrl+C flushes to warm/)
-
-## Project Structure
-```
-data-analyzer/
-├── cmd/
-│   ├── collector/       # Spider crawler CLI
-│   │   └── main.go
-│   ├── reducer/         # JSONL → JSON/Turso aggregator
-│   │   └── main.go
-│   └── server/          # Web UI server
-│       └── main.go
-├── internal/
-│   ├── riot/            # Riot API client
-│   │   ├── client.go    # HTTP client with rate limiting
-│   │   └── types.go     # API response structs
-│   ├── storage/         # JSONL file rotation
-│   │   ├── rotator.go   # FileRotator implementation
-│   │   └── types.go     # RawMatch struct
-│   └── db/              # Database integrations
-│       ├── db.go        # PostgreSQL connection pool
-│       ├── turso.go     # Turso client for website DB
-│       └── queries*.go  # Query functions
-├── web/                 # Static HTML/CSS for server
-└── docker-compose.yml   # PostgreSQL container
-```
 
 ## Database Schema
 
 ```sql
--- Champion overall stats
+-- No foreign keys - all tables independent for parallel operations
+
 CREATE TABLE champion_stats (
-    patch VARCHAR(10),
-    champion_id INT,
-    team_position VARCHAR(20),  -- TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY
-    wins INT,
-    matches INT,
+    patch TEXT NOT NULL,
+    champion_id INTEGER NOT NULL,
+    team_position TEXT NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    matches INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (patch, champion_id, team_position)
 );
 
--- Item stats per champion (overall, regardless of build slot)
 CREATE TABLE champion_items (
-    patch VARCHAR(10),
-    champion_id INT,
-    team_position VARCHAR(20),
-    item_id INT,
-    wins INT,
-    matches INT,
+    patch TEXT NOT NULL,
+    champion_id INTEGER NOT NULL,
+    team_position TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    matches INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (patch, champion_id, team_position, item_id)
 );
 
--- Item stats by build slot (1st, 2nd, 3rd, 4th, 5th, 6th completed item)
 CREATE TABLE champion_item_slots (
-    patch VARCHAR(10),
-    champion_id INT,
-    team_position VARCHAR(20),
-    item_id INT,
-    build_slot INT,  -- 1-6
-    wins INT,
-    matches INT,
+    patch TEXT NOT NULL,
+    champion_id INTEGER NOT NULL,
+    team_position TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    build_slot INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    matches INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (patch, champion_id, team_position, item_id, build_slot)
 );
 
--- Matchup stats (champion vs enemy)
 CREATE TABLE champion_matchups (
-    patch VARCHAR(10),
-    champion_id INT,
-    team_position VARCHAR(20),
-    enemy_champion_id INT,
-    wins INT,
-    matches INT,
+    patch TEXT NOT NULL,
+    champion_id INTEGER NOT NULL,
+    team_position TEXT NOT NULL,
+    enemy_champion_id INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    matches INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (patch, champion_id, team_position, enemy_champion_id)
 );
+
+-- Indexes for query performance
+CREATE INDEX idx_champion_stats_champ_pos ON champion_stats(champion_id, team_position);
+CREATE INDEX idx_champion_items_champ_pos ON champion_items(champion_id, team_position);
+CREATE INDEX idx_champion_item_slots_champ_pos ON champion_item_slots(champion_id, team_position);
+CREATE INDEX idx_champion_matchups_champ_pos ON champion_matchups(champion_id, team_position);
 ```
-
-## Reducer Features
-
-- **Patch normalization**: `14.24.448` → `14.24`
-- **Build order tracking**: Uses `buildOrder` field to track item purchase order (slots 1-6)
-- **Item deduplication**: Only counts unique items per player
-- **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
-- **Matchup calculation**: Groups participants by matchId to find lane opponents
-- **JSON Export**: Aggregates ALL files together and exports to data.json + manifest.json
-- **Archiving**: Compresses processed files to cold/ with gzip
 
 ## JSON Export Format
 
 ### manifest.json
 ```json
 {
-  "patch": "14.24",
-  "dataUrl": "https://your-cdn.com/data/data.json",
-  "generatedAt": "2025-01-15T10:30:00Z"
+  "version": "15.24",
+  "min_patch": "15.21",
+  "data_url": "",
+  "updated_at": "2025-01-15T10:30:00Z"
 }
 ```
+
+The `min_patch` field tells clients to delete data older than this patch.
 
 ### data.json
 ```json
 {
-  "patch": "14.24",
+  "patch": "15.24",
   "generatedAt": "2025-01-15T10:30:00Z",
-  "championStats": [
-    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "wins": 5234, "matches": 10000}
-  ],
-  "championItems": [
-    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3089, "wins": 3500, "matches": 6000}
-  ],
-  "championItemSlots": [
-    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3089, "buildSlot": 1, "wins": 2000, "matches": 4000},
-    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "itemId": 3157, "buildSlot": 2, "wins": 1800, "matches": 3500}
-  ],
-  "championMatchups": [
-    {"patch": "14.24", "championId": 103, "teamPosition": "MIDDLE", "enemyChampionId": 238, "wins": 450, "matches": 1000}
-  ]
+  "championStats": [...],
+  "championItems": [...],
+  "championItemSlots": [...],
+  "championMatchups": [...]
 }
 ```
 
@@ -220,7 +252,7 @@ CREATE TABLE champion_matchups (
 ```json
 {
   "matchId": "NA1_12345678",
-  "gameVersion": "14.24.1",
+  "gameVersion": "15.24.734",
   "gameDuration": 1847,
   "gameCreation": 1703001234567,
   "puuid": "...",
@@ -235,23 +267,6 @@ CREATE TABLE champion_matchups (
 }
 ```
 
-## Collection Strategy
-
-1. **Spider/Snowball approach**: Start with 1 player, discover others from their matches
-2. **In-memory deduplication**: Track visitedMatchIDs to avoid re-fetching
-3. **Rate limiting**: 15 req/sec, 90 req/2min (conservative under Riot's 20/100 limits)
-4. **2 API calls per match**: Match details + timeline (for build order extraction)
-5. **Graceful shutdown**: Ctrl+C flushes current file to warm/
-
-## Collector Options
-```bash
-go run cmd/collector/main.go \
-  --riot-id="Player#NA1" \  # Starting player
-  --count=20 \              # Matches per player (default: 20)
-  --max-players=100 \       # Max players to spider (default: 100)
-  --data-dir=./data         # Storage directory
-```
-
 ## Riot API Endpoints Used
 
 1. **Account Lookup**: `/riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}`
@@ -259,23 +274,27 @@ go run cmd/collector/main.go \
 3. **Match Details**: `/lol/match/v5/matches/{matchId}`
 4. **Match Timeline**: `/lol/match/v5/matches/{matchId}/timeline` (for build order)
 
-**Note**: Each match requires 2 API calls (details + timeline), so collection time is roughly doubled compared to details-only.
-
 ## Rate Limits (Dev Key)
 - 20 requests/second
 - 100 requests/2 minutes
-- Collector waits 30 seconds on 429 responses
+- Collector uses conservative 90 req/2min limit
+- Waits 30 seconds on 429 responses
 
-## Web Server API Endpoints
-
-### Raw Data
-- `GET /api/stats` - Match/participant counts
-- `GET /api/matches` - Recent matches list
-- `GET /api/match/{id}` - Match details
-- `GET /api/champions` - Champion stats from raw data
-
-### Aggregated Data
-- `GET /api/aggregated/overview` - Summary stats
-- `GET /api/aggregated/patches` - Available patches
-- `GET /api/aggregated/champions?patch=X` - Champion stats by patch
-- `GET /api/aggregated/items?patch=X&champion=Y&position=Z` - Item stats
+## Project Structure
+```
+data-analyzer/
+├── cmd/
+│   ├── collector/       # Spider crawler CLI
+│   ├── reducer/         # JSONL → JSON/Turso aggregator
+│   ├── pipeline/        # Combined collector + reducer
+│   └── server/          # Web UI server (optional)
+├── internal/
+│   ├── riot/            # Riot API client + Data Dragon
+│   │   ├── client.go    # HTTP client with rate limiting
+│   │   └── types.go     # API response structs
+│   ├── storage/         # JSONL file rotation
+│   │   └── rotator.go   # FileRotator implementation
+│   └── db/
+│       └── turso.go     # Turso client with batched operations
+└── export/              # Output directory (gitignored)
+```
