@@ -75,20 +75,22 @@ export default function Home() {
                   ))}
                 </div>
 
-                {/* Mock Matchup Content */}
+                {/* Mock Matchup Content - Master Yi Example */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between p-4 bg-[var(--arcane-blue)]/50 rounded-lg border border-[var(--hextech-gold)]/20">
                     <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-[var(--hextech-gold)]/20 rounded-lg flex items-center justify-center text-[var(--hextech-gold)] font-bold border border-[var(--hextech-gold)]/30">
-                        VS
-                      </div>
+                      <img
+                        src="https://ddragon.leagueoflegends.com/cdn/14.24.1/img/champion/MasterYi.png"
+                        alt="Master Yi"
+                        className="w-12 h-12 rounded-lg border border-[var(--hextech-gold)]/30"
+                      />
                       <div>
-                        <div className="text-[var(--text-primary)] font-medium">Enemy Laner</div>
-                        <div className="text-[var(--text-muted)] text-sm">Live Matchup</div>
+                        <div className="text-[var(--text-primary)] font-medium">Master Yi</div>
+                        <div className="text-[var(--text-muted)] text-sm">vs Rammus</div>
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-2xl font-bold wr-high">52.3%</div>
+                      <div className="text-2xl font-bold wr-low">43.8%</div>
                       <div className="text-[var(--text-muted)] text-sm">Win Rate</div>
                     </div>
                   </div>
@@ -96,15 +98,19 @@ export default function Home() {
                   <div className="text-[var(--text-secondary)] text-sm font-medium mb-2">Counter Matchups</div>
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { champ: "Counter 1", wr: "43.2%", class: "wr-low" },
-                      { champ: "Counter 2", wr: "45.1%", class: "wr-low" },
-                      { champ: "Counter 3", wr: "46.8%", class: "wr-mid" },
+                      { champ: "Rammus", icon: "Rammus", wr: "43.8%", class: "wr-low" },
+                      { champ: "Jax", icon: "Jax", wr: "45.2%", class: "wr-low" },
+                      { champ: "Elise", icon: "Elise", wr: "46.1%", class: "wr-low" },
                     ].map((item) => (
                       <div
                         key={item.champ}
                         className="p-3 bg-[var(--arcane-blue)]/30 rounded-lg border border-[var(--hextech-gold)]/10 text-center hover:border-[var(--hextech-gold)]/30 transition-all"
                       >
-                        <div className="w-10 h-10 bg-[var(--mystic-slate)] rounded-full mx-auto mb-2" />
+                        <img
+                          src={`https://ddragon.leagueoflegends.com/cdn/14.24.1/img/champion/${item.icon}.png`}
+                          alt={item.champ}
+                          className="w-10 h-10 rounded-full mx-auto mb-2"
+                        />
                         <div className="text-[var(--text-secondary)] text-sm">{item.champ}</div>
                         <div className={`text-sm font-medium ${item.class}`}>{item.wr}</div>
                       </div>

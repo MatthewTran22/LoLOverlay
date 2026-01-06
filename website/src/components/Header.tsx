@@ -1,13 +1,18 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export function Header() {
   return (
     <header className="border-b border-[var(--hextech-gold)]/20 bg-[var(--void-black)]/80 backdrop-blur-md sticky top-0 z-50">
-      <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-3 group">
-          <div className="w-10 h-10 bg-gradient-to-br from-[var(--hextech-gold)] to-[var(--bright-gold)] rounded-lg flex items-center justify-center pulse-glow">
-            <span className="text-[var(--void-black)] font-bold text-sm font-display">GD</span>
-          </div>
+      <div className="max-w-6xl mx-auto px-6 py-2 flex items-center justify-between">
+        <Link href="/" className="flex items-center gap-2 group">
+          <Image
+            src="/logo.png"
+            alt="GhostDraft"
+            width={75}
+            height={75}
+            className="drop-shadow-[0_0_12px_rgba(201,162,39,0.6)]"
+          />
           <span className="text-xl font-semibold text-[var(--pale-gold)] font-display tracking-wide group-hover:text-glow transition-all">
             GhostDraft
           </span>

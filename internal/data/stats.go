@@ -26,11 +26,11 @@ type StatsDB struct {
 
 // Manifest represents the remote manifest.json structure
 type Manifest struct {
-	Version     string `json:"version"`
-	DataURL     string `json:"data_url"`
-	DataSha256  string `json:"data_sha256"`
-	UpdatedAt   string `json:"updated_at"`
-	ForceReset  bool   `json:"force_reset"`
+	Version    string `json:"version"`
+	DataURL    string `json:"data_url"`
+	DataSha256 string `json:"data_sha256"`
+	UpdatedAt  string `json:"updated_at"`
+	ForceReset bool   `json:"force_reset"`
 }
 
 // DataExport represents the data.json structure from the reducer

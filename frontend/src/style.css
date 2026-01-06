@@ -177,13 +177,22 @@ body::before {
 .header {
     --wails-draggable: drag;
     cursor: move;
-    text-align: center;
-    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px 20px;
     background: linear-gradient(180deg, rgba(13, 24, 41, 0.95) 0%, rgba(10, 14, 23, 0.98) 100%);
     border: 1px solid var(--border-gold);
     border-radius: 8px;
     position: relative;
     overflow: hidden;
+}
+
+.header-logo {
+    width: 32px;
+    height: 32px;
+    filter: drop-shadow(0 0 8px rgba(201, 162, 39, 0.6));
 }
 
 .header::before {

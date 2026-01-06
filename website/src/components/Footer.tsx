@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export function Footer() {
   return (
@@ -6,10 +7,14 @@ export function Footer() {
       <div className="max-w-6xl mx-auto px-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="col-span-1 md:col-span-2">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-gradient-to-br from-[var(--hextech-gold)] to-[var(--bright-gold)] rounded-lg flex items-center justify-center">
-                <span className="text-[var(--void-black)] font-bold text-sm font-display">GD</span>
-              </div>
+            <div className="flex items-center gap-2 mb-4">
+              <Image
+                src="/logo.png"
+                alt="GhostDraft"
+                width={75}
+                height={75}
+                className="drop-shadow-[0_0_12px_rgba(201,162,39,0.6)]"
+              />
               <span className="text-xl font-semibold text-[var(--pale-gold)] font-display tracking-wide">
                 GhostDraft
               </span>
