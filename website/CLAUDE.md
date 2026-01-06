@@ -5,7 +5,8 @@ Next.js companion website for browsing League of Legends champion statistics, bu
 ## Tech Stack
 - **Framework**: Next.js 15 with App Router
 - **Styling**: Tailwind CSS 4 + Custom CSS (Hextech Arcane theme)
-- **Database**: SQLite with better-sqlite3 (server-side only)
+- **Database**: Turso (libSQL) - cloud SQLite, read-only
+- **Caching**: Next.js `unstable_cache` (1 hour TTL)
 - **Fonts**: Cinzel (display), Rajdhani (body)
 
 ## Project Structure
@@ -24,9 +25,9 @@ website/
 │   │   │   └── [championId]/
 │   │   │       └── page.tsx      # Champion detail page
 │   │   ├── admin/
-│   │   │   └── page.tsx          # Admin panel for DB updates
+│   │   │   └── page.tsx          # Admin panel (read-only status)
 │   │   └── api/
-│   │       ├── stats/route.ts    # Stats info + update trigger
+│   │       ├── stats/route.ts    # Stats info endpoint
 │   │       ├── meta/route.ts     # Top champions by role
 │   │       ├── champions/[id]/route.ts  # Champion build data
 │   │       └── matchups/[id]/route.ts   # Champion matchup data
@@ -34,11 +35,12 @@ website/
 │   │   ├── Header.tsx            # Navigation header
 │   │   └── Footer.tsx            # Site footer
 │   └── lib/
-│       ├── db.ts                 # SQLite connection + remote sync
-│       ├── stats.ts              # Stats query functions
+│       ├── db.ts                 # Turso client connection
+│       ├── stats.ts              # Stats query functions (async, cached)
 │       └── champions.ts          # Champion ID→name mapping, utilities
-├── data/
-│   └── stats.db                  # SQLite database (auto-downloaded)
+├── scripts/
+│   ├── push-to-turso.mjs         # Push local SQLite to Turso
+│   └── add-indexes.mjs           # Add database indexes
 └── public/                       # Static assets
 ```
 
@@ -62,18 +64,18 @@ Hero section with download CTA, feature highlights, and links to stats.
 
 ### `/admin` - Admin Panel
 - Database status (patch, champion count, matchup count)
-- Check for Updates button (smart update)
-- Force Update button (re-download everything)
+- Read-only mode - data updates managed by Data Analyzer
 
 ## Key Files
 
 ### `lib/db.ts`
-- SQLite connection management
-- Remote data sync from GitHub (manifest.json + data.json)
-- Patch version tracking
+- Turso client singleton using `@libsql/client`
+- `getDb()` - Returns Turso client
+- `getCurrentPatch()` - Async, fetches current patch version
+- `hasData()` - Async, checks if database has data
 
 ### `lib/stats.ts`
-Core query functions:
+All functions are **async** and wrapped with `unstable_cache` (1 hour TTL):
 - `fetchChampionData()` - Build paths with item options
 - `fetchAllMatchups()` - All matchup win rates
 - `fetchCounterMatchups()` - Worst matchups (counters)
@@ -81,6 +83,8 @@ Core query functions:
 - `fetchAllChampionsByRole()` - Full tier list
 - `fetchChampionStats()` - Single champion stats
 - `fetchChampionRoles()` - Roles a champion plays
+- `fetchTopChampionsByRole()` - Top N champions by win rate
+- `getStatsInfo()` - Patch and database stats
 
 ### `lib/ddragon.ts`
 - Fetches latest version from Data Dragon API dynamically
@@ -93,16 +97,31 @@ Core query functions:
 - Tier calculation (S+/S/A/B/C/D based on win rate + pick rate)
 - Role display names and utility functions
 
-## Database Schema
+## Database
 
-Uses the same SQLite schema as the desktop app:
+### Turso (Cloud SQLite)
+- Read-only access from website
+- Data pushed from local SQLite via `scripts/push-to-turso.mjs`
+- Indexes added via `scripts/add-indexes.mjs`
 
+### Schema
 ```sql
 champion_stats        -- Win rates by champion/position
 champion_items        -- Item stats (overall)
 champion_item_slots   -- Item stats by build slot (1-6)
 champion_matchups     -- Matchup win rates
 data_version          -- Current patch version
+```
+
+### Indexes
+```sql
+idx_champion_stats_position
+idx_champion_stats_champ_pos
+idx_champion_items_champ_pos
+idx_champion_item_slots_champ_pos
+idx_champion_item_slots_champ_pos_slot
+idx_champion_matchups_champ_pos
+idx_champion_matchups_enemy
 ```
 
 ## Build System
@@ -127,26 +146,39 @@ return "D";
 ## Data Flow
 
 ```
-GitHub (LoLOverlay-Data repo)
-  ├── manifest.json    # Patch version + data URL
-  └── data.json        # All aggregated stats
+Desktop App (local stats.db)
          ↓
-Website startup / Admin trigger
+scripts/push-to-turso.mjs
          ↓
-Downloads if newer patch available
+Turso Cloud Database
          ↓
-Bulk inserts to local SQLite (data/stats.db)
+Website queries via @libsql/client
          ↓
-Server components query SQLite
+Results cached with unstable_cache (1 hour)
          ↓
-Rendered pages with revalidation
+Server components render pages
 ```
 
 ## Environment Variables
 
 ```
-STATS_MANIFEST_URL=https://raw.githubusercontent.com/.../manifest.json
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-token
 ```
+
+## Scripts
+
+### Push data to Turso
+```bash
+node scripts/push-to-turso.mjs
+```
+Reads from desktop app's `stats.db` and pushes to Turso in batches.
+
+### Add indexes
+```bash
+node scripts/add-indexes.mjs
+```
+Creates indexes on Turso for faster queries.
 
 ## Build Commands
 
@@ -155,6 +187,13 @@ npm run dev      # Development server
 npm run build    # Production build
 npm run start    # Start production server
 ```
+
+## Caching Strategy
+
+- All stats queries use `unstable_cache` with 1 hour revalidation
+- First request hits Turso (slow ~100-500ms)
+- Subsequent requests within 1 hour are instant (cached)
+- Pages also have `revalidate = 3600` for ISR
 
 ## CSS Classes
 

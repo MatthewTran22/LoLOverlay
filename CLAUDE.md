@@ -14,7 +14,8 @@ Real-time champion select overlay that connects to the League Client.
 Companion website for browsing champion stats, builds, and matchups.
 - **Framework**: Next.js 15 with App Router
 - **Styling**: Tailwind CSS + Custom Hextech theme
-- **Database**: SQLite with better-sqlite3
+- **Database**: Turso (cloud SQLite) with @libsql/client
+- **Caching**: Next.js `unstable_cache` (1 hour TTL)
 - See `website/CLAUDE.md` for details
 
 ### 3. Data Analyzer
