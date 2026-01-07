@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+// Minimum games threshold for using current patch only
+// If current patch has fewer games, fallback to aggregated data
+const minGamesForCurrentPatch = 1000
+
 // ItemOption holds item ID with win rate
 type ItemOption struct {
 	ItemID  int
@@ -479,6 +483,7 @@ func (p *StatsProvider) FetchCounterPicks(enemyChampionID int, role string, limi
 }
 
 // FetchTopChampionsByRole returns the top N champions by win rate for a given role
+// Uses tiered logic: prefer current patch, fallback to aggregated if not enough data
 func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]ChampionWinRate, error) {
 	position := roleToPosition(role)
 
@@ -486,27 +491,65 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 		limit = 5
 	}
 
-	// Get total games for this position to calculate pick rate
-	var totalGames int
-	err := p.db.QueryRow(`
-		SELECT COALESCE(SUM(matches), 0) FROM champion_stats
-		WHERE team_position = ?
-	`, position).Scan(&totalGames)
-	if err != nil {
-		totalGames = 0
+	// Check if current patch has enough games
+	var currentPatchGames int
+	if p.currentPatch != "" {
+		p.db.QueryRow(`
+			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
+			WHERE team_position = ? AND patch = ?
+		`, position, p.currentPatch).Scan(&currentPatchGames)
 	}
 
-	// Query champions ordered by highest win rate
-	// Aggregate across all patches, include champions with at least 100 games
-	rows, err := p.db.Query(`
-		SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
-		FROM champion_stats
-		WHERE team_position = ?
-		GROUP BY champion_id
-		HAVING SUM(matches) >= 100
-		ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
-		LIMIT ?
-	`, position, limit)
+	// Decide whether to use current patch only or aggregate
+	useCurrentPatchOnly := currentPatchGames >= minGamesForCurrentPatch
+
+	var totalGames int
+	var rows *sql.Rows
+	var err error
+
+	if useCurrentPatchOnly {
+		// Current patch has enough data - use it exclusively
+		fmt.Printf("[Stats] Using current patch %s only for %s (%d games)\n", p.currentPatch, role, currentPatchGames)
+
+		err = p.db.QueryRow(`
+			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
+			WHERE team_position = ? AND patch = ?
+		`, position, p.currentPatch).Scan(&totalGames)
+		if err != nil {
+			totalGames = 0
+		}
+
+		rows, err = p.db.Query(`
+			SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+			FROM champion_stats
+			WHERE team_position = ? AND patch = ?
+			GROUP BY champion_id
+			HAVING SUM(matches) >= 100
+			ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+			LIMIT ?
+		`, position, p.currentPatch, limit)
+	} else {
+		// Not enough data in current patch - aggregate all patches
+		fmt.Printf("[Stats] Aggregating all patches for %s (current patch %s has only %d games)\n", role, p.currentPatch, currentPatchGames)
+
+		err = p.db.QueryRow(`
+			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
+			WHERE team_position = ?
+		`, position).Scan(&totalGames)
+		if err != nil {
+			totalGames = 0
+		}
+
+		rows, err = p.db.Query(`
+			SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+			FROM champion_stats
+			WHERE team_position = ?
+			GROUP BY champion_id
+			HAVING SUM(matches) >= 100
+			ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+			LIMIT ?
+		`, position, limit)
+	}
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to query top champions: %w", err)

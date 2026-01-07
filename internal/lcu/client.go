@@ -3,6 +3,7 @@ package lcu
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -194,4 +195,182 @@ func (c *Client) Get(endpoint string) (*http.Response, error) {
 	}
 	req.Header.Set("Authorization", c.authHeader)
 	return c.httpClient.Do(req)
+}
+
+// GetGameflowPhase returns the current gameflow phase
+func (c *Client) GetGameflowPhase() (string, error) {
+	resp, err := c.Get("/lol-gameflow/v1/gameflow-phase")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	var phase string
+	if err := json.NewDecoder(resp.Body).Decode(&phase); err != nil {
+		return "", err
+	}
+
+	return phase, nil
+}
+
+// GameSessionPlayer represents a player in the game session
+type GameSessionPlayer struct {
+	ChampionID int    `json:"championId"`
+	PUUID      string `json:"puuid"`
+	Position   string `json:"selectedPosition"`
+}
+
+// GameSession represents the current game session
+type GameSession struct {
+	GameData struct {
+		PlayerChampionSelections []GameSessionPlayer `json:"playerChampionSelections"`
+		TeamOne                  []GameSessionPlayer `json:"teamOne"`
+		TeamTwo                  []GameSessionPlayer `json:"teamTwo"`
+	} `json:"gameData"`
+}
+
+// GetCurrentSummonerPUUID returns the current summoner's PUUID
+func (c *Client) GetCurrentSummonerPUUID() (string, error) {
+	resp, err := c.Get("/lol-summoner/v1/current-summoner")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	var summoner struct {
+		PUUID string `json:"puuid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&summoner); err != nil {
+		return "", err
+	}
+
+	return summoner.PUUID, nil
+}
+
+// GetGameSession returns the current game session
+func (c *Client) GetGameSession() (*GameSession, error) {
+	resp, err := c.Get("/lol-gameflow/v1/session")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	var session GameSession
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		return nil, err
+	}
+
+	return &session, nil
+}
+
+// GetMatchHistoryByPUUID returns match history for a player by PUUID
+func (c *Client) GetMatchHistoryByPUUID(puuid string, count int) (*MatchHistoryResponse, error) {
+	endpoint := fmt.Sprintf("/lol-match-history/v1/products/lol/%s/matches?begIndex=0&endIndex=%d", puuid, count)
+	resp, err := c.Get(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	var history MatchHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		return nil, err
+	}
+
+	return &history, nil
+}
+
+// GamePlayer represents a player in the current game
+type GamePlayer struct {
+	PUUID      string
+	GameName   string
+	TagLine    string
+	ChampionID int
+	Team       int // 1 or 2
+}
+
+// GetGamePlayers returns all players in the current game
+func (c *Client) GetGamePlayers() ([]GamePlayer, string, error) {
+	session, err := c.GetGameSession()
+	if err != nil {
+		return nil, "", err
+	}
+
+	myPUUID, _ := c.GetCurrentSummonerPUUID()
+
+	var players []GamePlayer
+
+	for _, p := range session.GameData.TeamOne {
+		if p.PUUID != "" {
+			players = append(players, GamePlayer{
+				PUUID:      p.PUUID,
+				ChampionID: p.ChampionID,
+				Team:       1,
+			})
+		}
+	}
+
+	for _, p := range session.GameData.TeamTwo {
+		if p.PUUID != "" {
+			players = append(players, GamePlayer{
+				PUUID:      p.PUUID,
+				ChampionID: p.ChampionID,
+				Team:       2,
+			})
+		}
+	}
+
+	return players, myPUUID, nil
+}
+
+// GetCurrentGameChampion returns the champion ID the current player is playing
+func (c *Client) GetCurrentGameChampion() (int, string, error) {
+	puuid, err := c.GetCurrentSummonerPUUID()
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to get summoner: %w", err)
+	}
+
+	session, err := c.GetGameSession()
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to get game session: %w", err)
+	}
+
+	// Check playerChampionSelections first
+	for _, player := range session.GameData.PlayerChampionSelections {
+		if player.PUUID == puuid {
+			return player.ChampionID, "", nil
+		}
+	}
+
+	// Check teamOne
+	for _, player := range session.GameData.TeamOne {
+		if player.PUUID == puuid {
+			return player.ChampionID, player.Position, nil
+		}
+	}
+
+	// Check teamTwo
+	for _, player := range session.GameData.TeamTwo {
+		if player.PUUID == puuid {
+			return player.ChampionID, player.Position, nil
+		}
+	}
+
+	return 0, "", fmt.Errorf("player not found in game session")
 }

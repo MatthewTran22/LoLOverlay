@@ -16,6 +16,7 @@ type App struct {
 	ctx              context.Context
 	lcuClient        *lcu.Client
 	wsClient         *lcu.WebSocketClient
+	liveClient       *lcu.LiveClient
 	champions        *lcu.ChampionRegistry
 	items            *lcu.ItemRegistry
 	championDB       *data.ChampionDB
@@ -35,6 +36,7 @@ func NewApp() *App {
 	return &App{
 		lcuClient:     lcu.NewClient(),
 		wsClient:      lcu.NewWebSocketClient(),
+		liveClient:    lcu.NewLiveClient(),
 		champions:     lcu.NewChampionRegistry(),
 		items:         lcu.NewItemRegistry(),
 		stopPoll:      make(chan struct{}),
@@ -85,6 +87,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// Set up champ select handler
 	a.wsClient.SetChampSelectHandler(a.onChampSelectUpdate)
+
+	// Set up gameflow handler
+	a.wsClient.SetGameflowHandler(a.onGameflowUpdate)
 
 	// Start polling for League Client
 	go a.pollForLeagueClient()

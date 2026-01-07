@@ -150,6 +150,526 @@ body::before {
 }
 
 /* ============================================
+   In-Game Overlay
+   ============================================ */
+.ingame-overlay {
+    display: flex;
+    flex-direction: column;
+    padding: 16px 20px;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.ingame-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--border-gold);
+    margin-bottom: 16px;
+}
+
+.ingame-champ-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 10px;
+    border: 3px solid var(--hextech-gold);
+    box-shadow: 0 0 20px rgba(201, 162, 39, 0.4);
+}
+
+.ingame-champ-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ingame-champ-name {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--pale-gold);
+    text-shadow: 0 0 15px rgba(201, 162, 39, 0.4);
+}
+
+.ingame-champ-role {
+    font-family: var(--font-body);
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.ingame-build {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+}
+
+.ingame-build-loading,
+.ingame-build-empty {
+    text-align: center;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    padding: 40px;
+    font-size: 18px;
+}
+
+.ingame-items-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ingame-items-header {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--hextech-gold);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.ingame-items-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.ingame-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ingame-item-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 8px;
+    border: 2px solid var(--border-gold);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ingame-item-icon:hover {
+    transform: scale(1.08);
+    box-shadow: 0 0 14px rgba(201, 162, 39, 0.6);
+}
+
+.ingame-item-wr {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.ingame-item-wr .ingame-item-icon {
+    width: 56px;
+    height: 56px;
+}
+
+.ingame-item-winrate {
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.ingame-item-winrate.winning {
+    color: var(--win-green);
+}
+
+.ingame-item-winrate.losing {
+    color: var(--loss-red);
+}
+
+.ingame-item-winrate.even {
+    color: var(--text-secondary);
+}
+
+.ingame-no-items {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 14px;
+}
+
+/* In-game tabs */
+.ingame-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 12px;
+}
+
+.ingame-tab-btn {
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.ingame-tab-btn:hover {
+    border-color: var(--hextech-gold);
+    color: var(--pale-gold);
+}
+
+.ingame-tab-btn.active {
+    background: linear-gradient(180deg, rgba(201, 162, 39, 0.2) 0%, rgba(201, 162, 39, 0.1) 100%);
+    border-color: var(--hextech-gold);
+    color: var(--hextech-gold);
+}
+
+.ingame-tab-content {
+    display: none;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.ingame-tab-content.active {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Scouting styles */
+.scouting-content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.scouting-loading {
+    text-align: center;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    padding: 40px;
+}
+
+.scouting-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.scouting-section-header {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 6px 10px;
+    border-radius: 4px;
+}
+
+.scouting-section-header.enemy {
+    color: var(--loss-red);
+    background: rgba(255, 70, 70, 0.1);
+    border-left: 3px solid var(--loss-red);
+}
+
+.scouting-section-header.ally {
+    color: var(--win-green);
+    background: rgba(70, 255, 70, 0.1);
+    border-left: 3px solid var(--win-green);
+}
+
+.scouting-players {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.player-card {
+    background: rgba(13, 24, 41, 0.6);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.player-card.tilted {
+    border-color: var(--loss-red);
+    background: rgba(255, 70, 70, 0.05);
+}
+
+.player-card.on_fire {
+    border-color: var(--hextech-gold);
+    background: rgba(201, 162, 39, 0.05);
+}
+
+.player-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.player-champ-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+}
+
+.player-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.player-name {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-me-tag {
+    font-size: 10px;
+    background: var(--hextech-gold);
+    color: var(--void-black);
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 6px;
+    font-weight: 700;
+}
+
+.player-champ {
+    font-family: var(--font-body);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.player-wr {
+    font-family: var(--font-body);
+    font-size: 16px;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.player-wr.high {
+    color: var(--win-green);
+    background: rgba(70, 255, 70, 0.1);
+}
+
+.player-wr.low {
+    color: var(--loss-red);
+    background: rgba(255, 70, 70, 0.1);
+}
+
+.player-wr.mid {
+    color: var(--text-secondary);
+}
+
+.player-stats {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    font-family: var(--font-body);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.player-stat strong {
+    color: var(--text-primary);
+}
+
+.player-funfact {
+    margin-top: 6px;
+    font-family: var(--font-body);
+    font-size: 11px;
+    color: var(--arcane-cyan);
+    font-style: italic;
+}
+
+/* Gold tab styles */
+.gold-content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 12px 0;
+}
+
+.gold-info, .gold-loading, .gold-error {
+    text-align: center;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: 14px;
+    padding: 40px 16px;
+}
+
+.gold-error {
+    color: var(--loss-red);
+}
+
+.gold-summary {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    background: rgba(13, 24, 41, 0.6);
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+}
+
+.gold-total-diff {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.gold-diff-value {
+    font-family: var(--font-display);
+    font-size: 32px;
+    font-weight: 700;
+}
+
+.gold-total-diff.positive .gold-diff-value {
+    color: var(--win-green);
+}
+
+.gold-total-diff.negative .gold-diff-value {
+    color: var(--loss-red);
+}
+
+.gold-total-diff.even .gold-diff-value {
+    color: var(--text-secondary);
+}
+
+.gold-diff-label {
+    font-family: var(--font-body);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.gold-team-totals {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-body);
+    font-size: 14px;
+}
+
+.gold-team.my-team {
+    color: var(--arcane-cyan);
+}
+
+.gold-team.enemy-team {
+    color: var(--loss-red);
+}
+
+.gold-vs {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.gold-refresh-btn {
+    background: rgba(201, 162, 39, 0.15);
+    border: 1px solid var(--hextech-gold);
+    color: var(--hextech-gold);
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.gold-refresh-btn:hover {
+    background: var(--hextech-gold);
+    color: var(--void-black);
+}
+
+.gold-matchups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.gold-matchup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: rgba(13, 24, 41, 0.4);
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+}
+
+.gold-matchup-player {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gold-matchup-player.enemy-side {
+    flex-direction: row-reverse;
+}
+
+.gold-champ-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+}
+
+.gold-player-gold {
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 600;
+    min-width: 60px;
+}
+
+.gold-matchup-player.enemy-side .gold-player-gold {
+    text-align: right;
+}
+
+.gold-matchup-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.gold-position {
+    font-family: var(--font-body);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.gold-matchup-diff {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.gold-matchup-diff.positive {
+    color: var(--win-green);
+}
+
+.gold-matchup-diff.negative {
+    color: var(--loss-red);
+}
+
+.gold-matchup-diff.even {
+    color: var(--text-secondary);
+}
+
+/* ============================================
    Hex Card Base
    ============================================ */
 .hex-card {

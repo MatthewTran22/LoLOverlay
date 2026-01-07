@@ -204,7 +204,10 @@ func (c *TursoClient) InsertChampionStats(ctx context.Context, stats []ChampionS
 		}
 
 		query := fmt.Sprintf(
-			"INSERT INTO champion_stats (patch, champion_id, team_position, wins, matches) VALUES %s",
+			`INSERT INTO champion_stats (patch, champion_id, team_position, wins, matches) VALUES %s
+			ON CONFLICT(patch, champion_id, team_position) DO UPDATE SET
+				wins = wins + excluded.wins,
+				matches = matches + excluded.matches`,
 			strings.Join(placeholders, ", "))
 
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -215,7 +218,7 @@ func (c *TursoClient) InsertChampionStats(ctx context.Context, stats []ChampionS
 	return tx.Commit()
 }
 
-// InsertChampionItems inserts champion items using multi-value INSERT
+// InsertChampionItems inserts champion items using upsert
 func (c *TursoClient) InsertChampionItems(ctx context.Context, items []ChampionItem) error {
 	if len(items) == 0 {
 		return nil
@@ -243,7 +246,10 @@ func (c *TursoClient) InsertChampionItems(ctx context.Context, items []ChampionI
 		}
 
 		query := fmt.Sprintf(
-			"INSERT INTO champion_items (patch, champion_id, team_position, item_id, wins, matches) VALUES %s",
+			`INSERT INTO champion_items (patch, champion_id, team_position, item_id, wins, matches) VALUES %s
+			ON CONFLICT(patch, champion_id, team_position, item_id) DO UPDATE SET
+				wins = wins + excluded.wins,
+				matches = matches + excluded.matches`,
 			strings.Join(placeholders, ", "))
 
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -254,7 +260,7 @@ func (c *TursoClient) InsertChampionItems(ctx context.Context, items []ChampionI
 	return tx.Commit()
 }
 
-// InsertChampionItemSlots inserts champion item slots using multi-value INSERT
+// InsertChampionItemSlots inserts champion item slots using upsert
 func (c *TursoClient) InsertChampionItemSlots(ctx context.Context, slots []ChampionItemSlot) error {
 	if len(slots) == 0 {
 		return nil
@@ -282,7 +288,10 @@ func (c *TursoClient) InsertChampionItemSlots(ctx context.Context, slots []Champ
 		}
 
 		query := fmt.Sprintf(
-			"INSERT INTO champion_item_slots (patch, champion_id, team_position, item_id, build_slot, wins, matches) VALUES %s",
+			`INSERT INTO champion_item_slots (patch, champion_id, team_position, item_id, build_slot, wins, matches) VALUES %s
+			ON CONFLICT(patch, champion_id, team_position, item_id, build_slot) DO UPDATE SET
+				wins = wins + excluded.wins,
+				matches = matches + excluded.matches`,
 			strings.Join(placeholders, ", "))
 
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -293,7 +302,7 @@ func (c *TursoClient) InsertChampionItemSlots(ctx context.Context, slots []Champ
 	return tx.Commit()
 }
 
-// InsertChampionMatchups inserts champion matchups using multi-value INSERT
+// InsertChampionMatchups inserts champion matchups using upsert
 func (c *TursoClient) InsertChampionMatchups(ctx context.Context, matchups []ChampionMatchup) error {
 	if len(matchups) == 0 {
 		return nil
@@ -321,7 +330,10 @@ func (c *TursoClient) InsertChampionMatchups(ctx context.Context, matchups []Cha
 		}
 
 		query := fmt.Sprintf(
-			"INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches) VALUES %s",
+			`INSERT INTO champion_matchups (patch, champion_id, team_position, enemy_champion_id, wins, matches) VALUES %s
+			ON CONFLICT(patch, champion_id, team_position, enemy_champion_id) DO UPDATE SET
+				wins = wins + excluded.wins,
+				matches = matches + excluded.matches`,
 			strings.Join(placeholders, ", "))
 
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -330,6 +342,19 @@ func (c *TursoClient) InsertChampionMatchups(ctx context.Context, matchups []Cha
 	}
 
 	return tx.Commit()
+}
+
+// GetDataVersion returns the current data version from the database
+func (c *TursoClient) GetDataVersion(ctx context.Context) (string, error) {
+	var version string
+	err := c.db.QueryRowContext(ctx, "SELECT patch FROM data_version WHERE id = 1").Scan(&version)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil // No version set yet
+		}
+		return "", err
+	}
+	return version, nil
 }
 
 // DeleteOldPatches removes data from patches older than minPatch using a single transaction

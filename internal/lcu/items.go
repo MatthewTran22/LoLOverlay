@@ -16,9 +16,15 @@ type ItemData struct {
 	} `json:"gold"`
 }
 
+// ItemInfo holds item name and gold cost
+type ItemInfo struct {
+	Name string
+	Gold int
+}
+
 // ItemRegistry holds item ID to name mapping
 type ItemRegistry struct {
-	items   map[int]string
+	items   map[int]ItemInfo
 	mu      sync.RWMutex
 	loaded  bool
 	version string
@@ -27,7 +33,7 @@ type ItemRegistry struct {
 // NewItemRegistry creates a new item registry
 func NewItemRegistry() *ItemRegistry {
 	return &ItemRegistry{
-		items: make(map[int]string),
+		items: make(map[int]ItemInfo),
 	}
 }
 
@@ -71,11 +77,14 @@ func (r *ItemRegistry) Load() error {
 		return fmt.Errorf("failed to parse items: %w", err)
 	}
 
-	// Build ID -> Name map
+	// Build ID -> ItemInfo map
 	for idStr, item := range itemData.Data {
 		var id int
 		fmt.Sscanf(idStr, "%d", &id)
-		r.items[id] = item.Name
+		r.items[id] = ItemInfo{
+			Name: item.Name,
+			Gold: item.Gold.Total,
+		}
 	}
 
 	r.loaded = true
@@ -88,10 +97,21 @@ func (r *ItemRegistry) GetName(id int) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if name, ok := r.items[id]; ok {
-		return name
+	if info, ok := r.items[id]; ok {
+		return info.Name
 	}
 	return fmt.Sprintf("Item %d", id)
+}
+
+// GetGold returns the gold cost for an item
+func (r *ItemRegistry) GetGold(id int) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if info, ok := r.items[id]; ok {
+		return info.Gold
+	}
+	return 0
 }
 
 // GetVersion returns the loaded version

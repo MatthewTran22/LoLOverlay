@@ -18,6 +18,14 @@ export function GetConnectionStatus() {
   return window['go']['main']['App']['GetConnectionStatus']();
 }
 
+export function GetGameflowPhase() {
+  return window['go']['main']['App']['GetGameflowPhase']();
+}
+
+export function GetGoldDiff() {
+  return window['go']['main']['App']['GetGoldDiff']();
+}
+
 export function GetMetaChampions() {
   return window['go']['main']['App']['GetMetaChampions']();
 }

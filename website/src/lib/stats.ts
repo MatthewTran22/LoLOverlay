@@ -1,6 +1,10 @@
 import { getDb, getCurrentPatch } from "./db";
 import { unstable_cache } from "next/cache";
 
+// Minimum games threshold for using current patch only
+// If current patch has fewer games, fallback to aggregated data
+const MIN_GAMES_FOR_CURRENT_PATCH = 1000;
+
 export interface ItemOption {
   itemId: number;
   winRate: number;
@@ -258,23 +262,59 @@ export const fetchCounterMatchups = unstable_cache(_fetchCounterMatchups, ["coun
 async function _fetchAllChampionsByRole(role: string): Promise<ChampionWinRate[]> {
   const client = getDb();
   const position = roleToPosition(role);
+  const currentPatch = await getCurrentPatch();
 
-  const totalResult = await client.execute({
-    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
-    args: [position],
-  });
+  // Check if current patch has enough games
+  let currentPatchGames = 0;
+  if (currentPatch) {
+    const patchResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ? AND patch = ?`,
+      args: [position, currentPatch],
+    });
+    currentPatchGames = (patchResult.rows[0]?.total as number) || 0;
+  }
 
-  const totalGames = (totalResult.rows[0]?.total as number) || 0;
+  // Decide whether to use current patch only or aggregate
+  const useCurrentPatchOnly = currentPatchGames >= MIN_GAMES_FOR_CURRENT_PATCH;
 
-  const result = await client.execute({
-    sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
-          FROM champion_stats
-          WHERE team_position = ?
-          GROUP BY champion_id
-          HAVING SUM(matches) >= 100
-          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC`,
-    args: [position],
-  });
+  let totalGames: number;
+  let result;
+
+  if (useCurrentPatchOnly) {
+    // Current patch has enough data - use it exclusively
+    const totalResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ? AND patch = ?`,
+      args: [position, currentPatch],
+    });
+    totalGames = (totalResult.rows[0]?.total as number) || 0;
+
+    result = await client.execute({
+      sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+            FROM champion_stats
+            WHERE team_position = ? AND patch = ?
+            GROUP BY champion_id
+            HAVING SUM(matches) >= 100
+            ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC`,
+      args: [position, currentPatch],
+    });
+  } else {
+    // Not enough data in current patch - aggregate all patches
+    const totalResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
+      args: [position],
+    });
+    totalGames = (totalResult.rows[0]?.total as number) || 0;
+
+    result = await client.execute({
+      sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+            FROM champion_stats
+            WHERE team_position = ?
+            GROUP BY champion_id
+            HAVING SUM(matches) >= 100
+            ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC`,
+      args: [position],
+    });
+  }
 
   return result.rows
     .filter((r) => (r.matches as number) > 0)
@@ -374,24 +414,65 @@ export const fetchChampionRoles = unstable_cache(_fetchChampionRoles, ["champion
 async function _fetchTopChampionsByRole(role: string, limit: number = 5): Promise<ChampionWinRate[]> {
   const client = getDb();
   const position = roleToPosition(role);
+  const currentPatch = await getCurrentPatch();
 
-  const totalResult = await client.execute({
-    sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
-    args: [position],
-  });
+  // Check if current patch has enough games
+  let currentPatchGames = 0;
+  if (currentPatch) {
+    const patchResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ? AND patch = ?`,
+      args: [position, currentPatch],
+    });
+    currentPatchGames = (patchResult.rows[0]?.total as number) || 0;
+  }
 
-  const totalGames = (totalResult.rows[0]?.total as number) || 0;
+  // Decide whether to use current patch only or aggregate
+  const useCurrentPatchOnly = currentPatchGames >= MIN_GAMES_FOR_CURRENT_PATCH;
 
-  const result = await client.execute({
-    sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
-          FROM champion_stats
-          WHERE team_position = ?
-          GROUP BY champion_id
-          HAVING SUM(matches) >= 100
-          ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
-          LIMIT ?`,
-    args: [position, limit],
-  });
+  let totalGames: number;
+  let result;
+
+  if (useCurrentPatchOnly) {
+    // Current patch has enough data - use it exclusively
+    console.log(`[Stats] Using current patch ${currentPatch} only for ${role} (${currentPatchGames} games)`);
+
+    const totalResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ? AND patch = ?`,
+      args: [position, currentPatch],
+    });
+    totalGames = (totalResult.rows[0]?.total as number) || 0;
+
+    result = await client.execute({
+      sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+            FROM champion_stats
+            WHERE team_position = ? AND patch = ?
+            GROUP BY champion_id
+            HAVING SUM(matches) >= 100
+            ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+            LIMIT ?`,
+      args: [position, currentPatch, limit],
+    });
+  } else {
+    // Not enough data in current patch - aggregate all patches
+    console.log(`[Stats] Aggregating all patches for ${role} (current patch ${currentPatch} has only ${currentPatchGames} games)`);
+
+    const totalResult = await client.execute({
+      sql: `SELECT COALESCE(SUM(matches), 0) as total FROM champion_stats WHERE team_position = ?`,
+      args: [position],
+    });
+    totalGames = (totalResult.rows[0]?.total as number) || 0;
+
+    result = await client.execute({
+      sql: `SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
+            FROM champion_stats
+            WHERE team_position = ?
+            GROUP BY champion_id
+            HAVING SUM(matches) >= 100
+            ORDER BY (CAST(SUM(wins) AS REAL) / CAST(SUM(matches) AS REAL)) DESC
+            LIMIT ?`,
+      args: [position, limit],
+    });
+  }
 
   return result.rows
     .filter((r) => (r.matches as number) > 0)

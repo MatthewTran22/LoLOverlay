@@ -1,5 +1,5 @@
 import './style.css';
-import { GetConnectionStatus, GetMetaChampions, GetPersonalStats, GetChampionDetails, GetChampionBuild } from '../wailsjs/go/main/App';
+import { GetConnectionStatus, GetMetaChampions, GetPersonalStats, GetChampionDetails, GetChampionBuild, GetGameflowPhase, GetGoldDiff } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
 // Initial HTML structure
@@ -14,6 +14,36 @@ document.querySelector('#app').innerHTML = `
             <div class="status-indicator">
                 <div class="status-dot waiting" id="status-dot"></div>
                 <span class="status-message" id="status-message">Initializing...</span>
+            </div>
+        </div>
+
+        <div class="ingame-overlay hidden" id="ingame-overlay">
+            <div class="ingame-header">
+                <img class="ingame-champ-icon" id="ingame-champ-icon" src="" alt="" />
+                <div class="ingame-champ-info">
+                    <div class="ingame-champ-name" id="ingame-champ-name">Loading...</div>
+                    <div class="ingame-champ-role" id="ingame-champ-role"></div>
+                </div>
+            </div>
+            <div class="ingame-tabs">
+                <button class="ingame-tab-btn active" data-ingame-tab="build">Build</button>
+                <button class="ingame-tab-btn" data-ingame-tab="scouting">Scouting</button>
+                <button class="ingame-tab-btn" data-ingame-tab="gold">Gold</button>
+            </div>
+            <div class="ingame-tab-content active" id="ingame-tab-build">
+                <div class="ingame-build" id="ingame-build">
+                    <div class="ingame-build-loading">Loading build...</div>
+                </div>
+            </div>
+            <div class="ingame-tab-content" id="ingame-tab-scouting">
+                <div class="scouting-content" id="scouting-content">
+                    <div class="scouting-loading">Scouting players...</div>
+                </div>
+            </div>
+            <div class="ingame-tab-content" id="ingame-tab-gold">
+                <div class="gold-content" id="gold-content">
+                    <div class="gold-info">Hold TAB in-game to view gold differences</div>
+                </div>
             </div>
         </div>
 
@@ -97,6 +127,13 @@ const statusDot = document.getElementById('status-dot');
 const statusMessage = document.getElementById('status-message');
 const statusCard = document.getElementById('status-card');
 const tabsContainer = document.getElementById('tabs-container');
+const ingameOverlay = document.getElementById('ingame-overlay');
+const ingameChampIcon = document.getElementById('ingame-champ-icon');
+const ingameChampName = document.getElementById('ingame-champ-name');
+const ingameChampRole = document.getElementById('ingame-champ-role');
+const ingameBuild = document.getElementById('ingame-build');
+const scoutingContent = document.getElementById('scouting-content');
+const goldContent = document.getElementById('gold-content');
 const teamcompCard = document.getElementById('teamcomp-card');
 const teamcompWarning = document.getElementById('teamcomp-warning');
 const bansCard = document.getElementById('bans-card');
@@ -142,12 +179,30 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     });
 });
 
+// In-game tab switching
+document.querySelectorAll('.ingame-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        // Update active button
+        document.querySelectorAll('.ingame-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // Update active content
+        document.querySelectorAll('.ingame-tab-content').forEach(c => c.classList.remove('active'));
+        document.getElementById(`ingame-tab-${btn.dataset.ingameTab}`).classList.add('active');
+
+        // Load gold data when Gold tab is clicked
+        if (btn.dataset.ingameTab === 'gold') {
+            loadGoldData();
+        }
+    });
+});
+
 // State tracking
 let metaDataLoaded = false;
 let metaRetryCount = 0;
 let currentMetaData = null;
 let currentMetaRole = 'top';
 let isInChampSelect = false;
+let isInGame = false;
 let statsLoaded = false;
 let statsRetryCount = 0;
 let selectedChampion = null; // { championId, role }
@@ -583,8 +638,302 @@ function updateStatus(status) {
     statusDot.className = status.connected ? 'status-dot connected' : 'status-dot waiting';
 }
 
+// Update gameflow state
+function updateGameflow(data) {
+    const phase = data.phase;
+    console.log('Gameflow phase:', phase);
+
+    if (phase === 'InProgress') {
+        // In game - show overlay, hide everything else
+        isInGame = true;
+        ingameOverlay.classList.remove('hidden');
+        tabsContainer.classList.add('hidden');
+        statusCard.classList.add('hidden');
+
+        // Also hide all other cards
+        document.querySelectorAll('.bans-card, .counterpicks-card, .build-card, .teamcomp-card').forEach(el => {
+            el.classList.add('hidden');
+        });
+
+        // Reset in-game UI
+        ingameChampName.textContent = 'Loading...';
+        ingameChampRole.textContent = '';
+        ingameChampIcon.src = '';
+        ingameBuild.innerHTML = '<div class="ingame-build-loading">Loading build...</div>';
+    } else {
+        // Not in game - hide overlay, restore normal UI
+        isInGame = false;
+        ingameOverlay.classList.add('hidden');
+
+        // Show tabs container
+        tabsContainer.classList.remove('hidden');
+    }
+}
+
+// Update in-game build
+function updateInGameBuild(data) {
+    console.log('In-game build data:', data);
+
+    if (!data.hasBuild) {
+        ingameChampName.textContent = data.championName || 'Unknown';
+        ingameChampRole.textContent = formatRole(data.role) || '';
+        ingameBuild.innerHTML = '<div class="ingame-build-empty">No build data available</div>';
+        return;
+    }
+
+    // Update champion info
+    ingameChampName.textContent = data.championName;
+    ingameChampRole.textContent = formatRole(data.role);
+    if (data.championIcon) {
+        ingameChampIcon.src = data.championIcon;
+    }
+
+    // Render build
+    if (!data.builds || data.builds.length === 0) {
+        ingameBuild.innerHTML = '<div class="ingame-build-empty">No build data</div>';
+        return;
+    }
+
+    const build = data.builds[0];
+    let html = '';
+
+    // Core items
+    html += `
+        <div class="ingame-items-section">
+            <div class="ingame-items-header">Core Build</div>
+            <div class="ingame-items-row">
+                ${renderInGameItems(build.coreItems)}
+            </div>
+        </div>
+    `;
+
+    // 4th item options
+    if (build.fourthItems && build.fourthItems.length > 0) {
+        html += `
+            <div class="ingame-items-section">
+                <div class="ingame-items-header">4th Item</div>
+                <div class="ingame-items-row">
+                    ${renderInGameItemsWithWR(build.fourthItems)}
+                </div>
+            </div>
+        `;
+    }
+
+    // 5th item options
+    if (build.fifthItems && build.fifthItems.length > 0) {
+        html += `
+            <div class="ingame-items-section">
+                <div class="ingame-items-header">5th Item</div>
+                <div class="ingame-items-row">
+                    ${renderInGameItemsWithWR(build.fifthItems)}
+                </div>
+            </div>
+        `;
+    }
+
+    // 6th item options (always show)
+    html += `
+        <div class="ingame-items-section">
+            <div class="ingame-items-header">6th Item</div>
+            <div class="ingame-items-row">
+                ${build.sixthItems && build.sixthItems.length > 0
+                    ? renderInGameItemsWithWR(build.sixthItems)
+                    : '<span class="ingame-no-items">No data</span>'}
+            </div>
+        </div>
+    `;
+
+    ingameBuild.innerHTML = html;
+}
+
+// Render items for in-game view
+function renderInGameItems(items) {
+    if (!items || items.length === 0) return '<span class="ingame-no-items">-</span>';
+    return items.map(item => `
+        <div class="ingame-item">
+            <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
+        </div>
+    `).join('');
+}
+
+// Render items with win rate for in-game view
+function renderInGameItemsWithWR(items) {
+    if (!items || items.length === 0) return '<span class="ingame-no-items">-</span>';
+    return items.slice(0, 5).map(item => {
+        const wr = item.winRate ? item.winRate.toFixed(1) : '?';
+        const wrClass = item.winRate >= 51 ? 'winning' : item.winRate <= 49 ? 'losing' : 'even';
+        return `
+            <div class="ingame-item-wr">
+                <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name} (${item.games || 0} games)" />
+                <span class="ingame-item-winrate ${wrClass}">${wr}%</span>
+            </div>
+        `;
+    }).join('');
+}
+
+// Update scouting data
+function updateScouting(data) {
+    console.log('Scouting data:', data);
+
+    if (!data.hasData) {
+        scoutingContent.innerHTML = '<div class="scouting-loading">No scouting data available</div>';
+        return;
+    }
+
+    let html = '';
+
+    // Enemy team first (more important)
+    if (data.enemyTeam && data.enemyTeam.length > 0) {
+        html += `<div class="scouting-section">
+            <div class="scouting-section-header enemy">Enemy Team</div>
+            <div class="scouting-players">
+                ${data.enemyTeam.map(p => renderPlayerCard(p)).join('')}
+            </div>
+        </div>`;
+    }
+
+    // My team
+    if (data.myTeam && data.myTeam.length > 0) {
+        html += `<div class="scouting-section">
+            <div class="scouting-section-header ally">Your Team</div>
+            <div class="scouting-players">
+                ${data.myTeam.map(p => renderPlayerCard(p)).join('')}
+            </div>
+        </div>`;
+    }
+
+    scoutingContent.innerHTML = html;
+}
+
+// Render a single player card
+function renderPlayerCard(player) {
+    const wrClass = player.winRate >= 55 ? 'high' : player.winRate <= 45 ? 'low' : 'mid';
+    const tiltClass = player.tiltLevel || '';
+    const kdaDisplay = player.games > 0 ? player.kda.toFixed(2) : '-';
+    const wrDisplay = player.games > 0 ? player.winRate.toFixed(0) + '%' : '-';
+    const kdaAvg = player.games > 0
+        ? `${player.avgKills.toFixed(1)}/${player.avgDeaths.toFixed(1)}/${player.avgAssists.toFixed(1)}`
+        : '-';
+
+    const tiltIcon = player.tiltLevel === 'tilted' ? '🔥'
+        : player.tiltLevel === 'on_fire' ? '⭐'
+        : player.tiltLevel === 'warming_up' ? '😰'
+        : '';
+
+    const meTag = player.isMe ? '<span class="player-me-tag">YOU</span>' : '';
+
+    return `
+        <div class="player-card ${tiltClass}">
+            <div class="player-header">
+                <img class="player-champ-icon" src="${player.championIcon}" alt="${player.championName}" />
+                <div class="player-info">
+                    <div class="player-name">${player.gameName || 'Unknown'}${meTag} ${tiltIcon}</div>
+                    <div class="player-champ">${player.championName}</div>
+                </div>
+                <div class="player-wr ${wrClass}">${wrDisplay}</div>
+            </div>
+            <div class="player-stats">
+                <span class="player-stat"><strong>KDA:</strong> ${kdaDisplay} (${kdaAvg})</span>
+                <span class="player-stat"><strong>Games:</strong> ${player.games}</span>
+            </div>
+            ${player.funFact ? `<div class="player-funfact">${player.funFact}</div>` : ''}
+        </div>
+    `;
+}
+
+// Load gold data
+function loadGoldData() {
+    goldContent.innerHTML = '<div class="gold-loading">Loading gold data...</div>';
+
+    GetGoldDiff()
+        .then(data => {
+            updateGoldDisplay(data);
+        })
+        .catch(err => {
+            console.error('Failed to load gold data:', err);
+            goldContent.innerHTML = '<div class="gold-error">Failed to load gold data</div>';
+        });
+}
+
+// Update gold display
+function updateGoldDisplay(data) {
+    if (!data.hasData) {
+        goldContent.innerHTML = `<div class="gold-error">${data.error || 'No gold data available'}</div>`;
+        return;
+    }
+
+    const goldDiff = data.goldDiff;
+    const diffClass = goldDiff > 0 ? 'positive' : goldDiff < 0 ? 'negative' : 'even';
+    const diffSign = goldDiff > 0 ? '+' : '';
+
+    let html = `
+        <div class="gold-summary">
+            <div class="gold-total-diff ${diffClass}">
+                <span class="gold-diff-value">${diffSign}${goldDiff.toLocaleString()}g</span>
+                <span class="gold-diff-label">Team Gold Diff</span>
+            </div>
+            <div class="gold-team-totals">
+                <span class="gold-team my-team">${data.myTeamGold.toLocaleString()}g</span>
+                <span class="gold-vs">vs</span>
+                <span class="gold-team enemy-team">${data.enemyTeamGold.toLocaleString()}g</span>
+            </div>
+            <button class="gold-refresh-btn" onclick="loadGoldData()">Refresh</button>
+        </div>
+    `;
+
+    // Matchups by position
+    if (data.matchups && data.matchups.length > 0) {
+        html += '<div class="gold-matchups">';
+        for (const matchup of data.matchups) {
+            const diff = matchup.goldDiff;
+            const matchDiffClass = diff > 0 ? 'positive' : diff < 0 ? 'negative' : 'even';
+            const matchDiffSign = diff > 0 ? '+' : '';
+
+            html += `
+                <div class="gold-matchup-row">
+                    <div class="gold-matchup-player my-side">
+                        <img class="gold-champ-icon" src="${matchup.myPlayer.championIcon}" alt="${matchup.myPlayer.championName}" />
+                        <span class="gold-player-gold">${matchup.myPlayer.itemGold.toLocaleString()}g</span>
+                    </div>
+                    <div class="gold-matchup-info">
+                        <span class="gold-position">${formatPosition(matchup.position)}</span>
+                        <span class="gold-matchup-diff ${matchDiffClass}">${matchDiffSign}${diff.toLocaleString()}g</span>
+                    </div>
+                    <div class="gold-matchup-player enemy-side">
+                        <span class="gold-player-gold">${matchup.enemyPlayer.itemGold.toLocaleString()}g</span>
+                        <img class="gold-champ-icon" src="${matchup.enemyPlayer.championIcon}" alt="${matchup.enemyPlayer.championName}" />
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+    }
+
+    goldContent.innerHTML = html;
+}
+
+// Format position name
+function formatPosition(pos) {
+    const posMap = {
+        'TOP': 'Top',
+        'JUNGLE': 'Jng',
+        'MIDDLE': 'Mid',
+        'BOTTOM': 'ADC',
+        'UTILITY': 'Sup'
+    };
+    return posMap[pos] || pos;
+}
+
+// Make loadGoldData available globally for refresh button
+window.loadGoldData = loadGoldData;
+
 // Update champ select state
 function updateChampSelect(data) {
+    // Don't update UI if we're in game
+    if (isInGame) {
+        return;
+    }
+
     // Always show tabs container - Meta tab works outside champ select too
     statusCard.classList.add('hidden');
     tabsContainer.classList.remove('hidden');
@@ -815,16 +1164,35 @@ EventsOn('teamcomp:update', updateTeamComp);
 EventsOn('fullcomp:update', updateFullComp);
 EventsOn('items:update', updateItems);
 EventsOn('counterpicks:update', updateCounterPicks);
+EventsOn('gameflow:update', updateGameflow);
+EventsOn('ingame:build', updateInGameBuild);
+EventsOn('ingame:scouting', updateScouting);
 
 // Get initial status
 GetConnectionStatus()
-    .then(updateStatus)
+    .then(status => {
+        updateStatus(status);
+        // If connected, also get the current gameflow phase
+        if (status.connected) {
+            GetGameflowPhase().then(data => {
+                if (data.phase) {
+                    console.log('Initial gameflow phase from frontend:', data.phase);
+                    updateGameflow(data);
+                }
+            }).catch(err => console.log('Failed to get gameflow:', err));
+        }
+    })
     .catch(() => {
         updateStatus({ connected: false, message: 'Waiting for League...' });
     });
 
 // Initialize on startup - start with Stats view (not in champ select)
 setTimeout(() => {
+    // Don't override if we're already in game
+    if (isInGame) {
+        return;
+    }
+
     tabsContainer.classList.remove('hidden');
     statusCard.classList.add('hidden');
 

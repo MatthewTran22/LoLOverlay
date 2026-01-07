@@ -78,14 +78,18 @@ type WebSocketMessage struct {
 // ChampSelectHandler is called when champ select state changes
 type ChampSelectHandler func(session *ChampSelectSession, inChampSelect bool)
 
+// GameflowHandler is called when gameflow phase changes
+type GameflowHandler func(phase string)
+
 // WebSocketClient handles LCU WebSocket connection
 type WebSocketClient struct {
-	conn            *websocket.Conn
-	credentials     *Credentials
-	mu              sync.Mutex
-	isConnected     bool
-	stopChan        chan struct{}
+	conn               *websocket.Conn
+	credentials        *Credentials
+	mu                 sync.Mutex
+	isConnected        bool
+	stopChan           chan struct{}
 	champSelectHandler ChampSelectHandler
+	gameflowHandler    GameflowHandler
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -129,6 +133,13 @@ func (w *WebSocketClient) Connect(creds *Credentials) error {
 		w.conn.Close()
 		w.isConnected = false
 		return fmt.Errorf("failed to subscribe to champ select: %w", err)
+	}
+
+	// Subscribe to gameflow phase events
+	if err := w.subscribe("OnJsonApiEvent_lol-gameflow_v1_gameflow-phase"); err != nil {
+		w.conn.Close()
+		w.isConnected = false
+		return fmt.Errorf("failed to subscribe to gameflow: %w", err)
 	}
 
 	// Start listening for messages
@@ -194,8 +205,11 @@ func (w *WebSocketClient) handleMessage(data []byte) {
 		return
 	}
 
-	if eventName == "OnJsonApiEvent_lol-champ-select_v1_session" {
+	switch eventName {
+	case "OnJsonApiEvent_lol-champ-select_v1_session":
 		w.handleChampSelectEvent(raw[2])
+	case "OnJsonApiEvent_lol-gameflow_v1_gameflow-phase":
+		w.handleGameflowEvent(raw[2])
 	}
 }
 
@@ -239,6 +253,31 @@ func (w *WebSocketClient) handleChampSelectEvent(payload json.RawMessage) {
 // SetChampSelectHandler sets the callback for champ select events
 func (w *WebSocketClient) SetChampSelectHandler(handler ChampSelectHandler) {
 	w.champSelectHandler = handler
+}
+
+// handleGameflowEvent processes gameflow phase events
+func (w *WebSocketClient) handleGameflowEvent(payload json.RawMessage) {
+	var eventData struct {
+		EventType string `json:"eventType"`
+		URI       string `json:"uri"`
+		Data      string `json:"data"` // Phase is a string like "InProgress", "ChampSelect", "Lobby", etc.
+	}
+
+	if err := json.Unmarshal(payload, &eventData); err != nil {
+		return
+	}
+
+	if w.gameflowHandler == nil {
+		return
+	}
+
+	fmt.Printf("Gameflow phase: %s\n", eventData.Data)
+	w.gameflowHandler(eventData.Data)
+}
+
+// SetGameflowHandler sets the callback for gameflow phase events
+func (w *WebSocketClient) SetGameflowHandler(handler GameflowHandler) {
+	w.gameflowHandler = handler
 }
 
 // Disconnect closes the WebSocket connection

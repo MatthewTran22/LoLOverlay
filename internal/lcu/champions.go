@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,4 +144,27 @@ func (r *ChampionRegistry) IsLoaded() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.loaded
+}
+
+// GetIconURLByName returns the Data Dragon icon URL for a champion by name
+// Handles both raw API format (e.g., "game_character_displayname_Aatrox") and direct names
+func (r *ChampionRegistry) GetIconURLByName(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Extract champion name from raw format if needed
+	// Format: "game_character_displayname_Aatrox" -> "Aatrox"
+	iconID := name
+	if idx := strings.LastIndex(name, "_"); idx != -1 {
+		iconID = name[idx+1:]
+	}
+
+	// Search for champion by IconID
+	for _, info := range r.champions {
+		if info.IconID == iconID {
+			return fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/champion/%s.png", r.version, info.IconID)
+		}
+	}
+	// Fallback: use the extracted name directly as the icon ID
+	return fmt.Sprintf("https://ddragon.leagueoflegends.com/cdn/%s/img/champion/%s.png", r.version, iconID)
 }

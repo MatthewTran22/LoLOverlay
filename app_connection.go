@@ -77,6 +77,9 @@ func (a *App) connectWebSocket() {
 	}
 
 	fmt.Println("WebSocket connected - Listening for champ select...")
+
+	// Fetch initial gameflow state
+	go a.fetchInitialGameflow()
 }
 
 // tryConnect attempts to connect to the League Client
@@ -112,5 +115,43 @@ func (a *App) GetConnectionStatus() map[string]interface{} {
 	return map[string]interface{}{
 		"connected": false,
 		"message":   "Waiting for League...",
+	}
+}
+
+// fetchInitialGameflow fetches the current gameflow phase on connect
+func (a *App) fetchInitialGameflow() {
+	phase, err := a.lcuClient.GetGameflowPhase()
+	if err != nil {
+		fmt.Printf("Failed to get initial gameflow phase: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Initial gameflow phase: %s\n", phase)
+	a.onGameflowUpdate(phase)
+}
+
+// GetGameflowPhase returns the current gameflow phase (exposed to frontend for debugging)
+func (a *App) GetGameflowPhase() map[string]interface{} {
+	if !a.lcuClient.IsConnected() {
+		return map[string]interface{}{
+			"error": "Not connected",
+		}
+	}
+
+	phase, err := a.lcuClient.GetGameflowPhase()
+	if err != nil {
+		return map[string]interface{}{
+			"error": err.Error(),
+		}
+	}
+
+	// If in game, also trigger build and scouting fetch
+	if phase == "InProgress" {
+		go a.fetchAndEmitInGameBuild()
+		go a.fetchAndEmitScouting()
+	}
+
+	return map[string]interface{}{
+		"phase": phase,
 	}
 }

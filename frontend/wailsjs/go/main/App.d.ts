@@ -11,6 +11,10 @@ export function GetChampionDetails(arg1:number,arg2:string):Promise<main.Champio
 
 export function GetConnectionStatus():Promise<Record<string, any>>;
 
+export function GetGameflowPhase():Promise<Record<string, any>>;
+
+export function GetGoldDiff():Promise<Record<string, any>>;
+
 export function GetMetaChampions():Promise<main.MetaData>;
 
 export function GetPersonalStats():Promise<lcu.PersonalStats>;

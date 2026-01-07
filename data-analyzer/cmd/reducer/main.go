@@ -335,25 +335,32 @@ func main() {
 	fmt.Printf("Matchup stats: %d\n", len(allMatchupStats))
 	fmt.Printf("Detected patch: %s\n", detectedPatch)
 
-	// Export to JSON (default: enabled)
-	if !*skipJSON {
-		fmt.Printf("\n=== Exporting JSON ===\n")
-		if err := exportToJSON(*outputDir, detectedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
-			log.Fatalf("Failed to export JSON: %v", err)
-		}
-		fmt.Printf("Exported to: %s\n", *outputDir)
-	}
+	// Calculate min patch for cleanup
+	minPatch := calculateMinPatch(detectedPatch)
 
-	// Push to Turso (default: enabled if TURSO_DATABASE_URL is set)
+	// Track the versioned patch (with build number) for manifest
+	versionedPatch := detectedPatch + ".1" // Default if Turso is skipped
+
+	// Push to Turso first to get the versioned patch (default: enabled if TURSO_DATABASE_URL is set)
 	if !*skipTurso && os.Getenv("TURSO_DATABASE_URL") != "" {
 		fmt.Printf("\n=== Pushing to Turso ===\n")
-		minPatch := calculateMinPatch(detectedPatch)
-		if err := pushToTurso(detectedPatch, minPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
+		version, err := pushToTurso(detectedPatch, minPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats)
+		if err != nil {
 			log.Fatalf("Failed to push to Turso: %v", err)
 		}
+		versionedPatch = version
 		fmt.Println("Successfully pushed to Turso")
 	} else if !*skipTurso && os.Getenv("TURSO_DATABASE_URL") == "" {
 		fmt.Println("\n[Skipping Turso push - TURSO_DATABASE_URL not set]")
+	}
+
+	// Export to JSON with versioned patch (default: enabled)
+	if !*skipJSON {
+		fmt.Printf("\n=== Exporting JSON ===\n")
+		if err := exportToJSON(*outputDir, versionedPatch, allChampionStats, allItemStats, allItemSlotStats, allMatchupStats); err != nil {
+			log.Fatalf("Failed to export JSON: %v", err)
+		}
+		fmt.Printf("Exported to: %s\n", *outputDir)
 	}
 
 	// Archive files after successful processing
@@ -547,6 +554,35 @@ func normalizePatch(version string) string {
 	return version
 }
 
+// calculateNextVersion determines the next version with build number
+// e.g., if current is "15.24.3" and new patch is "15.24", returns "15.24.4"
+// e.g., if current is "15.24.3" and new patch is "15.25", returns "15.25.1"
+func calculateNextVersion(currentVersion, newPatch string) string {
+	if currentVersion == "" {
+		return newPatch + ".1"
+	}
+
+	// Parse current version (e.g., "15.24.3")
+	parts := strings.Split(currentVersion, ".")
+	if len(parts) < 2 {
+		return newPatch + ".1"
+	}
+
+	currentPatchBase := parts[0] + "." + parts[1]
+
+	// If same patch, increment build number
+	if currentPatchBase == newPatch {
+		var buildNum int
+		if len(parts) >= 3 {
+			fmt.Sscanf(parts[2], "%d", &buildNum)
+		}
+		return fmt.Sprintf("%s.%d", newPatch, buildNum+1)
+	}
+
+	// New patch, start at build 1
+	return newPatch + ".1"
+}
+
 // calculateMinPatch returns the minimum patch to keep (current - 3)
 // e.g., if current is "15.24", returns "15.21"
 func calculateMinPatch(currentPatch string) string {
@@ -624,10 +660,14 @@ func archiveFile(srcPath, coldDir string) error {
 
 // ManifestJSON represents the manifest.json structure
 type ManifestJSON struct {
-	Version   string `json:"version"`
-	MinPatch  string `json:"min_patch"`
-	DataURL   string `json:"data_url"`
-	UpdatedAt string `json:"updated_at"`
+	Version       string `json:"version"`
+	UpdatedAt     string `json:"updated_at"`
+	DataURL       string `json:"data_url"`
+	DataSHA256    string `json:"data_sha256"`
+	ForceReset    bool   `json:"force_reset"`
+	MinPatch      string `json:"min_patch"`
+	MinAppVersion string `json:"min_app_version"`
+	Message       string `json:"message"`
 }
 
 // exportToJSON exports aggregated data to data.json and manifest.json
@@ -729,10 +769,14 @@ func exportToJSON(outputDir, patch string,
 
 	// Write manifest.json
 	manifest := ManifestJSON{
-		Version:   patch,
-		MinPatch:  minPatch,
-		DataURL:   "", // To be filled in by user when uploading
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Version:       patch,
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		DataURL:       fmt.Sprintf("https://github.com/MatthewTran22/LoLOverlay-Data/releases/download/%s/data.json", patch),
+		DataSHA256:    dataSha256,
+		ForceReset:    false,
+		MinPatch:      minPatch,
+		MinAppVersion: "1.0.0",
+		Message:       fmt.Sprintf("Data updated for Patch %s", patch),
 	}
 
 	manifestPath := filepath.Join(outputDir, "manifest.json")
@@ -748,30 +792,31 @@ func exportToJSON(outputDir, patch string,
 		return fmt.Errorf("failed to write manifest.json: %w", err)
 	}
 
-	fmt.Printf("  Wrote manifest.json: version=%s, min_patch=%s\n", patch, minPatch)
+	fmt.Printf("  Wrote manifest.json: version=%s, min_patch=%s, sha256=%s\n", patch, minPatch, dataSha256[:16]+"...")
 	return nil
 }
 
 // pushToTurso pushes aggregated data to Turso database and cleans up old patches
+// Returns the versioned patch string (e.g., "15.24.3") for use in manifest
 func pushToTurso(patch, minPatch string,
 	championStats map[ChampionStatsKey]*ChampionStats,
 	itemStats map[ItemStatsKey]*ItemStats,
 	itemSlotStats map[ItemSlotStatsKey]*ItemSlotStats,
-	matchupStats map[MatchupStatsKey]*MatchupStats) error {
+	matchupStats map[MatchupStatsKey]*MatchupStats) (string, error) {
 
 	// Get Turso credentials from environment
 	tursoURL := os.Getenv("TURSO_DATABASE_URL")
 	tursoToken := os.Getenv("TURSO_AUTH_TOKEN")
 
 	if tursoURL == "" {
-		return fmt.Errorf("TURSO_DATABASE_URL environment variable not set")
+		return "", fmt.Errorf("TURSO_DATABASE_URL environment variable not set")
 	}
 
 	fmt.Printf("Connecting to Turso: %s\n", tursoURL)
 
 	client, err := db.NewTursoClient(tursoURL, tursoToken)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Turso: %w", err)
+		return "", fmt.Errorf("failed to connect to Turso: %w", err)
 	}
 	defer client.Close()
 
@@ -780,19 +825,21 @@ func pushToTurso(patch, minPatch string,
 	// Create tables if they don't exist
 	fmt.Println("Creating tables...")
 	if err := client.CreateTables(ctx); err != nil {
-		return fmt.Errorf("failed to create tables: %w", err)
+		return "", fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	// Clear existing data
-	fmt.Println("Clearing existing data...")
-	if err := client.ClearData(ctx); err != nil {
-		return fmt.Errorf("failed to clear data: %w", err)
+	// Get current version and calculate next version with build number
+	currentVersion, err := client.GetDataVersion(ctx)
+	if err != nil {
+		fmt.Printf("Warning: failed to get current version: %v\n", err)
 	}
+	nextVersion := calculateNextVersion(currentVersion, patch)
+	fmt.Printf("Version: %s -> %s\n", currentVersion, nextVersion)
 
-	// Set data version
+	// Set data version with build number
 	fmt.Println("Setting data version...")
-	if err := client.SetDataVersion(ctx, patch); err != nil {
-		return fmt.Errorf("failed to set data version: %w", err)
+	if err := client.SetDataVersion(ctx, nextVersion); err != nil {
+		return "", fmt.Errorf("failed to set data version: %w", err)
 	}
 
 	// Insert champion stats
@@ -808,7 +855,7 @@ func pushToTurso(patch, minPatch string,
 		})
 	}
 	if err := client.InsertChampionStats(ctx, champStatsList); err != nil {
-		return fmt.Errorf("failed to insert champion stats: %w", err)
+		return "", fmt.Errorf("failed to insert champion stats: %w", err)
 	}
 
 	// Insert champion items
@@ -825,7 +872,7 @@ func pushToTurso(patch, minPatch string,
 		})
 	}
 	if err := client.InsertChampionItems(ctx, itemStatsList); err != nil {
-		return fmt.Errorf("failed to insert champion items: %w", err)
+		return "", fmt.Errorf("failed to insert champion items: %w", err)
 	}
 
 	// Insert champion item slots
@@ -843,7 +890,7 @@ func pushToTurso(patch, minPatch string,
 		})
 	}
 	if err := client.InsertChampionItemSlots(ctx, slotStatsList); err != nil {
-		return fmt.Errorf("failed to insert champion item slots: %w", err)
+		return "", fmt.Errorf("failed to insert champion item slots: %w", err)
 	}
 
 	// Insert champion matchups
@@ -860,17 +907,17 @@ func pushToTurso(patch, minPatch string,
 		})
 	}
 	if err := client.InsertChampionMatchups(ctx, matchupStatsList); err != nil {
-		return fmt.Errorf("failed to insert champion matchups: %w", err)
+		return "", fmt.Errorf("failed to insert champion matchups: %w", err)
 	}
 
 	// Clean up old patches
 	fmt.Printf("Cleaning up patches older than %s...\n", minPatch)
 	deleted, err := client.DeleteOldPatches(ctx, minPatch)
 	if err != nil {
-		return fmt.Errorf("failed to delete old patches: %w", err)
+		return "", fmt.Errorf("failed to delete old patches: %w", err)
 	}
 	fmt.Printf("Deleted %d old records\n", deleted)
 
 	fmt.Println("Turso push complete!")
-	return nil
+	return nextVersion, nil
 }

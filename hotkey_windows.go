@@ -9,17 +9,28 @@ import (
 )
 
 var (
-	user32              = syscall.NewLazyDLL("user32.dll")
-	procRegisterHotKey  = user32.NewProc("RegisterHotKey")
-	procGetMessage      = user32.NewProc("GetMessageW")
+	user32                  = syscall.NewLazyDLL("user32.dll")
+	procSetWindowsHookEx    = user32.NewProc("SetWindowsHookExW")
+	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
+	procGetMessage          = user32.NewProc("GetMessageW")
+	procGetAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
 )
 
 const (
-	MOD_CONTROL = 0x0002
-	MOD_NOREPEAT = 0x4000
-	VK_O        = 0x4F
-	WM_HOTKEY   = 0x0312
+	WH_KEYBOARD_LL = 13
+	WM_KEYDOWN     = 0x0100
+	VK_O           = 0x4F
+	VK_CONTROL     = 0x11
 )
+
+// KBDLLHOOKSTRUCT contains information about a low-level keyboard input event
+type KBDLLHOOKSTRUCT struct {
+	VkCode      uint32
+	ScanCode    uint32
+	Flags       uint32
+	Time        uint32
+	DwExtraInfo uintptr
+}
 
 type MSG struct {
 	HWND    uintptr
@@ -30,23 +41,53 @@ type MSG struct {
 	Pt      struct{ X, Y int32 }
 }
 
-// RegisterToggleHotkey registers Ctrl+O as a global hotkey
+var appInstance *App
+var keyboardHook uintptr
+
+// isKeyPressed checks if a key is currently pressed
+func isKeyPressed(vk uintptr) bool {
+	ret, _, _ := procGetAsyncKeyState.Call(vk)
+	return ret&0x8000 != 0
+}
+
+// keyboardProc is the low-level keyboard hook callback
+func keyboardProc(nCode int, wParam uintptr, lParam uintptr) uintptr {
+	if nCode >= 0 && wParam == WM_KEYDOWN {
+		kbStruct := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
+		// Check for Ctrl+O
+		if kbStruct.VkCode == VK_O && isKeyPressed(VK_CONTROL) {
+			if appInstance != nil {
+				appInstance.ToggleWindow()
+			}
+		}
+	}
+	ret, _, _ := procCallNextHookEx.Call(keyboardHook, uintptr(nCode), wParam, lParam)
+	return ret
+}
+
+// RegisterToggleHotkey registers Ctrl+O as a global hotkey using low-level keyboard hook
 func (a *App) RegisterToggleHotkey() {
+	appInstance = a
+
 	go func() {
-		// Register Ctrl+O (id = 1)
-		ret, _, err := procRegisterHotKey.Call(
-			0,                          // hwnd (0 = current thread)
-			1,                          // id
-			uintptr(MOD_CONTROL|MOD_NOREPEAT), // modifiers
-			uintptr(VK_O),              // virtual key code
+		// Create callback
+		callback := syscall.NewCallback(keyboardProc)
+
+		// Install the low-level keyboard hook
+		ret, _, err := procSetWindowsHookEx.Call(
+			WH_KEYBOARD_LL,
+			callback,
+			0,
+			0,
 		)
 		if ret == 0 {
-			fmt.Printf("Failed to register hotkey: %v\n", err)
+			fmt.Printf("Failed to install keyboard hook: %v\n", err)
 			return
 		}
-		fmt.Println("Registered Ctrl+O hotkey to toggle overlay")
+		keyboardHook = ret
+		fmt.Println("Installed low-level keyboard hook for Ctrl+O")
 
-		// Message loop to receive hotkey events
+		// Message loop to keep the hook alive
 		var msg MSG
 		for {
 			ret, _, _ := procGetMessage.Call(
@@ -55,10 +96,6 @@ func (a *App) RegisterToggleHotkey() {
 			)
 			if ret == 0 {
 				break
-			}
-
-			if msg.Message == WM_HOTKEY {
-				a.ToggleWindow()
 			}
 		}
 	}()
