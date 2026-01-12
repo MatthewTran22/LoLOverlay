@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/url"
 	"os"
 	"os/signal"
@@ -18,6 +19,8 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/joho/godotenv"
 )
+
+const timelineSamplingRate = 0.20 // 20% of matches get timeline data
 
 func main() {
 	// Load .env file - try multiple locations
@@ -137,6 +140,8 @@ func main() {
 	playerCount := 0
 	totalMatchesWritten := 0
 	startTime := time.Now()
+	consecutiveFailures := 0
+	const maxConsecutiveFailures = 5
 
 	// Process queue
 	for len(queue) > 0 && playerCount < *maxPlayers {
@@ -160,9 +165,16 @@ func main() {
 		// Fetch match history
 		matchIDs, err := client.GetMatchHistory(ctx, currentPUUID, *matchCount)
 		if err != nil {
-			log.Printf("  Failed to fetch match history: %v", err)
+			consecutiveFailures++
+			log.Printf("  Failed to fetch match history: %v (failure %d/%d)", err, consecutiveFailures, maxConsecutiveFailures)
+			if consecutiveFailures >= maxConsecutiveFailures {
+				fmt.Printf("\n[API Error] %d consecutive failures - API key may have expired\n", consecutiveFailures)
+				fmt.Println("[API Error] Stopping collection early, proceeding to reducer with collected data...")
+				goto shutdown
+			}
 			continue
 		}
+		consecutiveFailures = 0 // Reset on success
 		fmt.Printf("  Found %d matches\n", len(matchIDs))
 
 		// Process each match
@@ -201,9 +213,24 @@ func main() {
 			}
 			currentPatchMatches++
 
+			// Fetch timeline for 20% of matches (statistical sampling for build order data)
+			var buildOrders map[int][]int
+			if rand.Float64() < timelineSamplingRate {
+				timeline, err := client.GetTimeline(ctx, matchID)
+				if err != nil {
+					log.Printf("    [Timeline] Failed to fetch: %v", err)
+				} else {
+					buildOrders = make(map[int][]int)
+					for _, p := range match.Info.Participants {
+						buildOrder := riot.ExtractBuildOrder(timeline, p.ParticipantID)
+						if len(buildOrder) > 0 {
+							buildOrders[p.ParticipantID] = buildOrder
+						}
+					}
+				}
+			}
+
 			// Write each participant as a separate record
-			// NOTE: Timeline fetch removed for 2x speed improvement
-			// Using final inventory (item0-5) instead of build order from timeline
 			for _, participant := range match.Info.Participants {
 				rawMatch := &storage.RawMatch{
 					MatchID:      matchID,
@@ -223,6 +250,13 @@ func main() {
 					Item3:        participant.Item3,
 					Item4:        participant.Item4,
 					Item5:        participant.Item5,
+				}
+
+				// Include build order if timeline was fetched for this match
+				if buildOrders != nil {
+					if bo, ok := buildOrders[participant.ParticipantID]; ok {
+						rawMatch.BuildOrder = bo
+					}
 				}
 
 				if err := rotator.WriteLine(rawMatch); err != nil {

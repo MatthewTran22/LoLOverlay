@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,9 +25,10 @@ import (
 
 // CLI flags
 var (
-	outputDir  = flag.String("output-dir", "./export", "Directory to output data.json")
-	skipTurso  = flag.Bool("skip-turso", false, "Skip pushing to Turso")
-	skipJSON   = flag.Bool("skip-json", false, "Skip JSON export")
+	outputDir   = flag.String("output-dir", "./export", "Directory to output data.json")
+	skipTurso   = flag.Bool("skip-turso", false, "Skip pushing to Turso")
+	skipJSON    = flag.Bool("skip-json", false, "Skip JSON export")
+	skipRelease = flag.Bool("skip-release", false, "Skip GitHub release")
 )
 
 const DDRAGON_VERSION = "14.24.1"
@@ -361,6 +363,18 @@ func main() {
 			log.Fatalf("Failed to export JSON: %v", err)
 		}
 		fmt.Printf("Exported to: %s\n", *outputDir)
+	}
+
+	// Create GitHub release (default: enabled if GITHUB_TOKEN is set)
+	if !*skipRelease && os.Getenv("GITHUB_TOKEN") != "" {
+		fmt.Printf("\n=== Creating GitHub Release ===\n")
+		if err := createGitHubRelease(*outputDir, versionedPatch); err != nil {
+			log.Printf("Warning: Failed to create GitHub release: %v", err)
+		} else {
+			fmt.Println("Successfully created GitHub release")
+		}
+	} else if !*skipRelease && os.Getenv("GITHUB_TOKEN") == "" {
+		fmt.Println("\n[Skipping GitHub release - GITHUB_TOKEN not set]")
 	}
 
 	// Archive files after successful processing
@@ -808,6 +822,47 @@ func exportToJSON(outputDir, patch string,
 	}
 
 	fmt.Printf("  Wrote manifest.json: version=%s, min_patch=%s, sha256=%s\n", patch, minPatch, dataSha256[:16]+"...")
+	return nil
+}
+
+// createGitHubRelease creates a GitHub release and uploads data.json
+func createGitHubRelease(outputDir, patch string) error {
+	repo := os.Getenv("GITHUB_REPO")
+	if repo == "" {
+		repo = "MatthewTran22/LoLOverlay-Data"
+	}
+
+	dataPath := filepath.Join(outputDir, "data.json")
+	if _, err := os.Stat(dataPath); os.IsNotExist(err) {
+		return fmt.Errorf("data.json not found at %s", dataPath)
+	}
+
+	// Check if release already exists
+	checkCmd := exec.Command("gh", "release", "view", patch, "--repo", repo)
+	if err := checkCmd.Run(); err == nil {
+		// Release exists, delete it first
+		fmt.Printf("  Release %s already exists, deleting...\n", patch)
+		deleteCmd := exec.Command("gh", "release", "delete", patch, "--repo", repo, "--yes")
+		if err := deleteCmd.Run(); err != nil {
+			return fmt.Errorf("failed to delete existing release: %w", err)
+		}
+	}
+
+	// Create release and upload data.json
+	fmt.Printf("  Creating release %s on %s...\n", patch, repo)
+	createCmd := exec.Command("gh", "release", "create", patch,
+		dataPath,
+		"--repo", repo,
+		"--title", fmt.Sprintf("Patch %s", patch),
+		"--notes", fmt.Sprintf("Automated data release for patch %s", patch),
+	)
+
+	output, err := createCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create release: %w\nOutput: %s", err, string(output))
+	}
+
+	fmt.Printf("  Release created: %s\n", strings.TrimSpace(string(output)))
 	return nil
 }
 

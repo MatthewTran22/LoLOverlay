@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"embed"
 	"fmt"
 	"html/template"
@@ -43,6 +44,7 @@ func main() {
 	http.HandleFunc("/start", handleStart)
 	http.HandleFunc("/status", handleStatus)
 	http.HandleFunc("/stream", handleStream)
+	http.HandleFunc("/restore", handleRestore)
 
 	fmt.Printf("Pipeline UI running at http://localhost:%s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
@@ -283,4 +285,245 @@ func findAnalyzerDir() string {
 	}
 
 	return ""
+}
+
+func handleRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	target := r.URL.Query().Get("target") // "turso" or "github"
+	if target != "turso" && target != "github" {
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid target, must be 'turso' or 'github'"})
+		return
+	}
+
+	patchFilter := r.URL.Query().Get("patch") // e.g. "15.24" or "16.1"
+
+	pipelineMu.Lock()
+	if pipelineRunning {
+		pipelineMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"error": "Pipeline is running, cannot restore"})
+		return
+	}
+	pipelineRunning = true
+	pipelineMu.Unlock()
+
+	storagePath := os.Getenv("BLOB_STORAGE_PATH")
+	if storagePath == "" {
+		pipelineMu.Lock()
+		pipelineRunning = false
+		pipelineMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"error": "BLOB_STORAGE_PATH not set"})
+		return
+	}
+	storagePath = strings.Trim(storagePath, "\"")
+
+	coldDir := filepath.Join(storagePath, "cold")
+	warmDir := filepath.Join(storagePath, "warm")
+
+	// Find all .gz files in cold
+	files, err := filepath.Glob(filepath.Join(coldDir, "*.jsonl.gz"))
+	if err != nil {
+		pipelineMu.Lock()
+		pipelineRunning = false
+		pipelineMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Failed to list cold files: %v", err)})
+		return
+	}
+
+	if len(files) == 0 {
+		pipelineMu.Lock()
+		pipelineRunning = false
+		pipelineMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"error": "No files in cold storage to restore"})
+		return
+	}
+
+	// Run restore and reducer in background
+	go runRestoreAndReduce(files, coldDir, warmDir, target, patchFilter)
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+}
+
+func runRestoreAndReduce(files []string, coldDir, warmDir, target, patchFilter string) {
+	defer func() {
+		pipelineMu.Lock()
+		pipelineRunning = false
+		pipelineMu.Unlock()
+		broadcast("\n[PIPELINE COMPLETE]")
+	}()
+
+	// Step 1: Restore files from cold to warm
+	broadcast("\n========================================")
+	broadcast("STEP 1: RESTORING FROM COLD STORAGE")
+	if patchFilter != "" {
+		broadcast(fmt.Sprintf("         (filtering for patch %s)", patchFilter))
+	}
+	broadcast("========================================\n")
+
+	totalRecords := 0
+	filteredRecords := 0
+	for _, coldPath := range files {
+		total, filtered, err := decompressToWarmFiltered(coldPath, warmDir, patchFilter)
+		if err != nil {
+			broadcast(fmt.Sprintf("[ERROR] Failed to restore %s: %v", filepath.Base(coldPath), err))
+			continue
+		}
+		totalRecords += total
+		filteredRecords += filtered
+		if patchFilter != "" {
+			broadcast(fmt.Sprintf("[RESTORE] %s: %d/%d records matched patch %s", filepath.Base(coldPath), filtered, total, patchFilter))
+		} else {
+			broadcast(fmt.Sprintf("[RESTORE] Restored %s (%d records)", filepath.Base(coldPath), total))
+		}
+	}
+
+	if patchFilter != "" {
+		broadcast(fmt.Sprintf("[RESTORE] Total: %d/%d records matched patch %s", filteredRecords, totalRecords, patchFilter))
+	} else {
+		broadcast(fmt.Sprintf("[RESTORE] Total: %d records restored", totalRecords))
+	}
+
+	if filteredRecords == 0 && patchFilter != "" {
+		broadcast("[ERROR] No records matched the patch filter, skipping reducer")
+		return
+	}
+	if totalRecords == 0 {
+		broadcast("[ERROR] No records were restored, skipping reducer")
+		return
+	}
+
+	// Step 2: Run reducer with appropriate flags
+	broadcast("\n========================================")
+	if target == "turso" {
+		broadcast("STEP 2: PUSHING TO TURSO")
+	} else {
+		broadcast("STEP 2: PUSHING TO GITHUB")
+	}
+	broadcast("========================================\n")
+
+	analyzerDir := findAnalyzerDir()
+	if analyzerDir == "" {
+		broadcast("[ERROR] Could not find data-analyzer directory")
+		return
+	}
+
+	reducerArgs := []string{
+		"run", "./cmd/reducer",
+		"--output-dir=./export",
+	}
+
+	if target == "turso" {
+		reducerArgs = append(reducerArgs, "--skip-release")
+	} else {
+		reducerArgs = append(reducerArgs, "--skip-turso")
+	}
+
+	if err := runCommandWithOutput(analyzerDir, "go", reducerArgs...); err != nil {
+		broadcast(fmt.Sprintf("[ERROR] Reducer failed: %v", err))
+		return
+	}
+
+	broadcast("\n========================================")
+	broadcast("SUCCESS!")
+	broadcast("========================================")
+}
+
+// decompressToWarmFiltered decompresses a cold file to warm, optionally filtering by patch.
+// Returns (totalRecords, filteredRecords, error).
+func decompressToWarmFiltered(coldPath, warmDir, patchFilter string) (int, int, error) {
+	// Open compressed file
+	src, err := os.Open(coldPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer src.Close()
+
+	gzReader, err := gzip.NewReader(src)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer gzReader.Close()
+
+	// Create warm file (remove .gz extension)
+	filename := filepath.Base(coldPath)
+	filename = strings.TrimSuffix(filename, ".gz")
+	warmPath := filepath.Join(warmDir, filename)
+
+	dst, err := os.Create(warmPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer dst.Close()
+
+	writer := bufio.NewWriter(dst)
+	scanner := bufio.NewScanner(gzReader)
+	// Increase scanner buffer for large lines
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	totalRecords := 0
+	filteredRecords := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		totalRecords++
+
+		// If no filter, write all lines
+		if patchFilter == "" {
+			writer.WriteString(line)
+			writer.WriteString("\n")
+			filteredRecords++
+			continue
+		}
+
+		// Parse the line to check gameVersion
+		var record struct {
+			GameVersion string `json:"gameVersion"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			// If we can't parse, skip the line
+			continue
+		}
+
+		// Normalize the gameVersion (e.g., "15.24.734" -> "15.24")
+		normalizedPatch := normalizePatch(record.GameVersion)
+		if normalizedPatch == patchFilter {
+			writer.WriteString(line)
+			writer.WriteString("\n")
+			filteredRecords++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		os.Remove(warmPath)
+		return 0, 0, err
+	}
+
+	if err := writer.Flush(); err != nil {
+		os.Remove(warmPath)
+		return 0, 0, err
+	}
+
+	// If filtering and no records matched, remove the empty file
+	if patchFilter != "" && filteredRecords == 0 {
+		os.Remove(warmPath)
+	}
+
+	// Remove the cold file after successful restore
+	if err := os.Remove(coldPath); err != nil {
+		return totalRecords, filteredRecords, fmt.Errorf("restored but failed to remove cold file: %w", err)
+	}
+
+	return totalRecords, filteredRecords, nil
+}
+
+// normalizePatch converts "15.24.734" to "15.24"
+func normalizePatch(gameVersion string) string {
+	parts := strings.Split(gameVersion, ".")
+	if len(parts) >= 2 {
+		return parts[0] + "." + parts[1]
+	}
+	return gameVersion
 }

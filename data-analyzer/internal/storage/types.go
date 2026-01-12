@@ -26,8 +26,8 @@ type RawMatch struct {
 	Item4 int `json:"item4"`
 	Item5 int `json:"item5"`
 
-	// BuildOrder is DEPRECATED - kept for backward compatibility with old JSONL files
-	// New data uses item0-5 directly for item stats
+	// BuildOrder contains the order items were purchased (from timeline, ~20% of matches)
+	// Used for champion_item_slots table (1st item, 2nd item, etc.)
 	BuildOrder []int `json:"buildOrder,omitempty"`
 }
 

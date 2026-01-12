@@ -53,6 +53,7 @@ go run cmd/reducer/main.go \
   --output-dir=./export \    # Directory for JSON output (default: ./export)
   --skip-json                # Skip JSON export
   --skip-turso               # Skip Turso push
+  --skip-release             # Skip GitHub release
 ```
 
 ## Environment Variables
@@ -64,6 +65,10 @@ BLOB_STORAGE_PATH=./data
 # Turso (runs by default if set)
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-token
+
+# GitHub releases (runs by default if set)
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+GITHUB_REPO=MatthewTran22/LoLOverlay-Data  # Optional, defaults to this
 ```
 
 ## Collection Strategy
@@ -137,11 +142,7 @@ This reduces API calls by ~40% while maintaining statistically representative bu
    ├── Item slot stats: ONLY matches with buildOrder (~20%)
    └── Calculate matchups (group by matchId, find lane opponents)
 
-3. EXPORT JSON
-   ├── Write data.json (all stats)
-   └── Write manifest.json (version with build number, e.g., 15.24.3)
-
-4. PUSH TO TURSO (bulk load optimized)
+3. PUSH TO TURSO (bulk load optimized)
    ├── Create tables (without indexes)
    ├── Drop existing indexes
    ├── Calculate next version (15.24.2 → 15.24.3, or 15.25.1 for new patch)
@@ -149,7 +150,16 @@ This reduces API calls by ~40% while maintaining statistically representative bu
    ├── Recreate indexes
    └── Delete old patches (WHERE patch < min_patch)
 
-5. ARCHIVE → warm/*.jsonl → cold/*.jsonl.gz
+4. EXPORT JSON
+   ├── Write data.json (all stats)
+   └── Write manifest.json (version with build number, e.g., 15.24.3)
+
+5. GITHUB RELEASE (if GITHUB_TOKEN set)
+   ├── Check if release exists → delete if so
+   ├── Create release with patch version as tag
+   └── Upload data.json as release asset
+
+6. ARCHIVE → warm/*.jsonl → cold/*.jsonl.gz
 ```
 
 ### Reducer Features

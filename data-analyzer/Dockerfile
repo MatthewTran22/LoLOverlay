@@ -23,6 +23,9 @@ FROM golang:1.24-alpine
 
 WORKDIR /app
 
+# Install gh CLI for GitHub releases
+RUN apk add --no-cache github-cli
+
 # Copy built binaries
 COPY --from=builder /bin/ui /app/ui
 COPY --from=builder /bin/collector /app/collector

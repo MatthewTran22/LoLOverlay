@@ -159,6 +159,15 @@
             background: #3a3a4a;
         }
 
+        button.danger {
+            background: #dc2626;
+            color: #fff;
+        }
+
+        button.danger:hover {
+            background: #ef4444;
+        }
+
         .output-container {
             background: #0d0d12;
             border: 1px solid #2a2a3a;
@@ -264,9 +273,16 @@
                             <label for="reduce_only">Reduce only (skip collection)</label>
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label for="patch_filter">Patch Filter (for restore)</label>
+                        <input type="text" id="patch_filter" name="patch_filter" placeholder="e.g. 15.24 or 16.1">
+                    </div>
                 </div>
                 <div class="btn-row">
                     <button type="submit" id="startBtn">Start Pipeline</button>
+                    <button type="button" class="secondary" id="reducerBtn">Run Reducer Only</button>
+                    <button type="button" class="secondary" id="restoreTursoBtn">Restore + Turso</button>
+                    <button type="button" class="secondary" id="restoreGithubBtn">Restore + GitHub</button>
                     <button type="button" class="secondary" id="clearBtn">Clear Output</button>
                     <span id="runningIndicator" class="running-indicator hidden">
                         <span class="dot"></span> Running...
@@ -285,10 +301,14 @@
         const output = document.getElementById('output');
         const form = document.getElementById('pipelineForm');
         const startBtn = document.getElementById('startBtn');
+        const reducerBtn = document.getElementById('reducerBtn');
+        const restoreTursoBtn = document.getElementById('restoreTursoBtn');
+        const restoreGithubBtn = document.getElementById('restoreGithubBtn');
         const clearBtn = document.getElementById('clearBtn');
         const runningIndicator = document.getElementById('runningIndicator');
         const reduceOnly = document.getElementById('reduce_only');
         const riotIdInput = document.getElementById('riot_id');
+        const patchFilterInput = document.getElementById('patch_filter');
 
         let eventSource = null;
 
@@ -334,6 +354,9 @@
 
         function setRunning(running) {
             startBtn.disabled = running;
+            reducerBtn.disabled = running;
+            restoreTursoBtn.disabled = running;
+            restoreGithubBtn.disabled = running;
             runningIndicator.classList.toggle('hidden', !running);
         }
 
@@ -378,6 +401,75 @@
         clearBtn.addEventListener('click', () => {
             output.innerHTML = '';
         });
+
+        reducerBtn.addEventListener('click', async () => {
+            const formData = new FormData();
+            formData.set('reduce_only', 'true');
+
+            try {
+                const response = await fetch('/start', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    appendOutput('[ERROR] ' + data.error);
+                } else {
+                    setRunning(true);
+                }
+            } catch (err) {
+                appendOutput('[ERROR] Failed to start reducer: ' + err.message);
+            }
+        });
+
+        restoreTursoBtn.addEventListener('click', async () => {
+            const patch = patchFilterInput.value.trim();
+            try {
+                let url = '/restore?target=turso';
+                if (patch) {
+                    url += '&patch=' + encodeURIComponent(patch);
+                }
+                const response = await fetch(url, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    appendOutput('[ERROR] ' + data.error);
+                } else {
+                    setRunning(true);
+                }
+            } catch (err) {
+                appendOutput('[ERROR] Failed to restore: ' + err.message);
+            }
+        });
+
+        restoreGithubBtn.addEventListener('click', async () => {
+            const patch = patchFilterInput.value.trim();
+            try {
+                let url = '/restore?target=github';
+                if (patch) {
+                    url += '&patch=' + encodeURIComponent(patch);
+                }
+                const response = await fetch(url, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    appendOutput('[ERROR] ' + data.error);
+                } else {
+                    setRunning(true);
+                }
+            } catch (err) {
+                appendOutput('[ERROR] Failed to restore: ' + err.message);
+            }
+        });
+
     </script>
 </body>
 </html>

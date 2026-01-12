@@ -174,7 +174,7 @@ type ChampionMatchup struct {
 	Matches         int
 }
 
-const batchSize = 500 // Increased for bulk loading performance
+const batchSize = 100 // Reduced to avoid Turso HTTP size limits (502 errors)
 
 // InsertChampionStats inserts champion stats using multi-value INSERT
 func (c *TursoClient) InsertChampionStats(ctx context.Context, stats []ChampionStat) error {
