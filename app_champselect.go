@@ -527,7 +527,11 @@ func (a *App) calculatePlayerStats(player lcu.GamePlayer, myPUUID string) Player
 	// Fetch match history
 	history, err := a.lcuClient.GetMatchHistoryByPUUID(player.PUUID, 20)
 	if err != nil {
-		fmt.Printf("Failed to get match history for %s: %v\n", player.PUUID[:8], err)
+		puuidDisplay := player.PUUID
+		if len(puuidDisplay) > 8 {
+			puuidDisplay = puuidDisplay[:8]
+		}
+		fmt.Printf("Failed to get match history for %s: %v\n", puuidDisplay, err)
 		stats.FunFact = "Mystery player - no history found"
 		return stats
 	}

@@ -105,6 +105,7 @@ func (w *WebSocketClient) Connect(creds *Credentials) error {
 	defer w.mu.Unlock()
 
 	if w.isConnected {
+		fmt.Println("WebSocket already connected")
 		return nil
 	}
 
@@ -120,6 +121,8 @@ func (w *WebSocketClient) Connect(creds *Credentials) error {
 	header := http.Header{}
 	header.Set("Authorization", "Basic "+basicAuth("riot", creds.Password))
 
+	fmt.Printf("Connecting to LCU WebSocket at %s...\n", url)
+
 	conn, _, err := dialer.Dial(url, header)
 	if err != nil {
 		return fmt.Errorf("failed to connect to LCU WebSocket: %w", err)
@@ -129,21 +132,27 @@ func (w *WebSocketClient) Connect(creds *Credentials) error {
 	w.isConnected = true
 
 	// Subscribe to champ select events
+	fmt.Println("Subscribing to champ select events...")
 	if err := w.subscribe("OnJsonApiEvent_lol-champ-select_v1_session"); err != nil {
 		w.conn.Close()
 		w.isConnected = false
 		return fmt.Errorf("failed to subscribe to champ select: %w", err)
 	}
+	fmt.Println("Subscribed to champ select events")
 
 	// Subscribe to gameflow phase events
+	fmt.Println("Subscribing to gameflow events...")
 	if err := w.subscribe("OnJsonApiEvent_lol-gameflow_v1_gameflow-phase"); err != nil {
 		w.conn.Close()
 		w.isConnected = false
 		return fmt.Errorf("failed to subscribe to gameflow: %w", err)
 	}
+	fmt.Println("Subscribed to gameflow events")
 
 	// Start listening for messages
 	go w.listen()
+
+	fmt.Println("WebSocket listening started")
 
 	return nil
 }
@@ -157,21 +166,25 @@ func (w *WebSocketClient) subscribe(event string) error {
 // listen reads messages from the WebSocket
 func (w *WebSocketClient) listen() {
 	defer func() {
+		fmt.Println("WebSocket listen loop exiting...")
 		w.mu.Lock()
 		w.isConnected = false
 		if w.conn != nil {
 			w.conn.Close()
 		}
 		w.mu.Unlock()
+		fmt.Println("WebSocket disconnected")
 	}()
 
 	for {
 		select {
 		case <-w.stopChan:
+			fmt.Println("WebSocket stop signal received")
 			return
 		default:
 			_, message, err := w.conn.ReadMessage()
 			if err != nil {
+				fmt.Printf("WebSocket read error: %v\n", err)
 				return
 			}
 

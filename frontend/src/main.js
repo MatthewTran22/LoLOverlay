@@ -5,7 +5,10 @@ import { EventsOn } from '../wailsjs/runtime/runtime';
 // Initial HTML structure
 document.querySelector('#app').innerHTML = `
     <div class="gold-box hidden" id="gold-box">
-        <span class="gold-box-value" id="gold-box-value">+0g</span>
+        <span class="gold-team" id="gold-my-team">0g</span>
+        <span class="gold-vs">vs</span>
+        <span class="gold-team enemy" id="gold-enemy-team">0g</span>
+        <span class="gold-diff" id="gold-diff"></span>
     </div>
     <div class="build-box hidden" id="build-box">
         <div class="build-box-content" id="build-box-content">
@@ -126,7 +129,9 @@ document.querySelector('#app').innerHTML = `
 // DOM elements - Tab HUD boxes (positioned independently)
 const goldBox = document.getElementById('gold-box');
 const buildBox = document.getElementById('build-box');
-const goldBoxValue = document.getElementById('gold-box-value');
+const goldMyTeam = document.getElementById('gold-my-team');
+const goldEnemyTeam = document.getElementById('gold-enemy-team');
+const goldDiff = document.getElementById('gold-diff');
 const buildBoxContent = document.getElementById('build-box-content');
 
 // DOM elements - Main overlay
@@ -347,8 +352,8 @@ function showMetaTierList() {
 function renderBasicItems(items) {
     if (items && items.length > 0) {
         return items.map(item => `
-            <div class="item-slot">
-                <img class="item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
+            <div class="item-slot" data-tooltip="${item.name}">
+                <img class="item-icon" src="${item.iconURL}" alt="${item.name}" />
             </div>
         `).join('');
     }
@@ -362,8 +367,8 @@ function renderItemsWithWR(items) {
             const wr = item.winRate ? item.winRate.toFixed(1) : '?';
             const wrClass = item.winRate >= 51 ? 'winning' : item.winRate <= 49 ? 'losing' : 'even';
             return `
-                <div class="item-slot-wr">
-                    <img class="item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name} (${item.games} games)" />
+                <div class="item-slot-wr" data-tooltip="${item.name}">
+                    <img class="item-icon" src="${item.iconURL}" alt="${item.name}" />
                     <span class="item-wr ${wrClass}">${wr}%</span>
                 </div>
             `;
@@ -671,9 +676,10 @@ function updateGameflow(data) {
         // Show tabs container
         tabsContainer.classList.remove('hidden');
 
-        // After a game, we're definitely not in champ select anymore
-        // Ensure champ-select-only tabs are hidden and switch to Stats
-        if (isInChampSelect) {
+        // Only reset champ select state when actually leaving the game flow
+        // Don't reset during ChampSelect, ReadyCheck, etc. - let champselect:update handle those
+        const exitPhases = ['None', 'Lobby', 'EndOfGame', 'PreEndOfGame', 'WaitingForStats', 'Reconnect'];
+        if (exitPhases.includes(phase) && isInChampSelect) {
             isInChampSelect = false;
             updateTabVisibility(false);
             const statsBtn = document.querySelector('.tab-btn[data-tab="stats"]');
@@ -744,8 +750,8 @@ function renderBuildBoxContent(championName, build) {
 function renderBuildBoxItems(items) {
     if (!items || items.length === 0) return '<span class="build-box-empty">-</span>';
     return items.map(item => `
-        <div class="build-box-item">
-            <img class="build-box-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
+        <div class="build-box-item" data-tooltip="${item.name}">
+            <img class="build-box-item-icon" src="${item.iconURL}" alt="${item.name}" />
         </div>
     `).join('');
 }
@@ -757,8 +763,8 @@ function renderBuildBoxItemsWithWR(items) {
         const wr = item.winRate ? item.winRate.toFixed(1) : '?';
         const wrClass = item.winRate >= 51 ? 'winning' : item.winRate <= 49 ? 'losing' : 'even';
         return `
-            <div class="build-box-item-wr">
-                <img class="build-box-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
+            <div class="build-box-item-wr" data-tooltip="${item.name}">
+                <img class="build-box-item-icon" src="${item.iconURL}" alt="${item.name}" />
                 <span class="build-box-wr ${wrClass}">${wr}%</span>
             </div>
         `;
@@ -837,8 +843,8 @@ function updateInGameBuild(data) {
 function renderInGameItems(items) {
     if (!items || items.length === 0) return '<span class="ingame-no-items">-</span>';
     return items.map(item => `
-        <div class="ingame-item">
-            <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name}" />
+        <div class="ingame-item" data-tooltip="${item.name}">
+            <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" />
         </div>
     `).join('');
 }
@@ -850,8 +856,8 @@ function renderInGameItemsWithWR(items) {
         const wr = item.winRate ? item.winRate.toFixed(1) : '?';
         const wrClass = item.winRate >= 51 ? 'winning' : item.winRate <= 49 ? 'losing' : 'even';
         return `
-            <div class="ingame-item-wr">
-                <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" title="${item.name} (${item.games || 0} games)" />
+            <div class="ingame-item-wr" data-tooltip="${item.name}">
+                <img class="ingame-item-icon" src="${item.iconURL}" alt="${item.name}" />
                 <span class="ingame-item-winrate ${wrClass}">${wr}%</span>
             </div>
         `;
@@ -928,20 +934,36 @@ function renderPlayerCard(player) {
     `;
 }
 
+// Format gold value (e.g., 12500 -> "12.5k")
+function formatGold(gold) {
+    if (gold >= 1000) {
+        return (gold / 1000).toFixed(1) + 'k';
+    }
+    return gold.toString();
+}
+
 // Update gold box display
 function updateGoldBox(data) {
     if (!data.hasData) {
-        goldBoxValue.textContent = '---';
-        goldBoxValue.className = 'gold-box-value';
+        goldMyTeam.textContent = '---';
+        goldEnemyTeam.textContent = '---';
+        goldDiff.textContent = '';
+        goldDiff.className = 'gold-diff';
         return;
     }
 
-    const diff = data.goldDiff;
+    const myGold = data.myTeamGold || 0;
+    const enemyGold = data.enemyTeamGold || 0;
+    const diff = data.goldDiff || 0;
+
+    goldMyTeam.textContent = formatGold(myGold);
+    goldEnemyTeam.textContent = formatGold(enemyGold);
+
     const sign = diff > 0 ? '+' : '';
     const diffClass = diff > 0 ? 'ahead' : diff < 0 ? 'behind' : 'even';
 
-    goldBoxValue.textContent = `${sign}${diff.toLocaleString()}g`;
-    goldBoxValue.className = `gold-box-value ${diffClass}`;
+    goldDiff.textContent = `(${sign}${formatGold(Math.abs(diff))})`;
+    goldDiff.className = `gold-diff ${diffClass}`;
 }
 
 // Toggle tab HUD mode
