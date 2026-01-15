@@ -24,8 +24,6 @@ website/
 │   │   │   ├── page.tsx          # Champion tier list by role
 │   │   │   └── [championId]/
 │   │   │       └── page.tsx      # Champion detail page
-│   │   ├── admin/
-│   │   │   └── page.tsx          # Admin panel (read-only status)
 │   │   └── api/
 │   │       ├── stats/route.ts    # Stats info endpoint
 │   │       ├── meta/route.ts     # Top champions by role
@@ -61,10 +59,6 @@ Hero section with download CTA, feature highlights, and links to stats.
 - Recommended build: 2 core items + boots + situational options
 - Counters section (worst matchups)
 - Best matchups section
-
-### `/admin` - Admin Panel
-- Database status (patch, champion count, matchup count)
-- Read-only mode - data updates managed by Data Analyzer
 
 ## Key Files
 

@@ -1,6 +1,19 @@
+"use client";
+
 import Link from "next/link";
+import { useState, useEffect } from "react";
 
 export default function Home() {
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+  const [lobbyImageIndex, setLobbyImageIndex] = useState(0);
+  const lobbyImages = ["/OverlayLobby.png", "/OverlayLobbyMeta.png"];
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setLobbyImageIndex((prev) => (prev + 1) % lobbyImages.length);
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
   return (
     <div>
       {/* Hero Section */}
@@ -50,80 +63,76 @@ export default function Home() {
             GhostDraft displays a clean overlay during champion select with all the information you need.
           </p>
 
-          <div className="relative mx-auto max-w-4xl float">
-            {/* App Preview Mockup */}
-            <div className="hex-card rounded-2xl overflow-hidden shadow-2xl">
-              <div className="bg-[var(--deep-navy)] px-4 py-3 border-b border-[var(--hextech-gold)]/20 flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-red-500/80" />
-                <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
-                <div className="w-3 h-3 rounded-full bg-green-500/80" />
-                <span className="text-[var(--hextech-gold)] text-sm ml-2 font-display">GhostDraft</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div
+              className="hex-card rounded-xl overflow-hidden group cursor-pointer h-full flex flex-col"
+              onClick={() => setLightboxImage({ src: lobbyImages[lobbyImageIndex], alt: "GhostDraft Lobby View" })}
+            >
+              <div className="p-6 bg-[var(--deep-navy)]">
+                <h3 className="text-2xl font-display font-semibold text-[var(--pale-gold)] mb-2">Lobby</h3>
+                <p className="text-base text-[var(--text-secondary)]">See your stats and the current meta before queue</p>
               </div>
-              <div className="p-6 md:p-8 bg-[var(--deep-navy)]">
-                {/* Mock UI */}
-                <div className="grid grid-cols-4 gap-4 mb-6">
-                  {["Matchup", "Build", "Team Comp", "Meta"].map((tab, i) => (
-                    <div
-                      key={tab}
-                      className={`text-center py-2 rounded-lg text-sm font-medium transition-all ${
-                        i === 0
-                          ? "bg-[var(--hextech-gold)]/20 text-[var(--hextech-gold)] border border-[var(--hextech-gold)]/50"
-                          : "text-[var(--text-muted)] border border-[var(--arcane-blue)] hover:border-[var(--hextech-gold)]/30"
-                      }`}
-                    >
-                      {tab}
-                    </div>
+              <div className="relative overflow-hidden flex-1">
+                <div
+                  className="flex h-full transition-transform duration-1000 ease-in-out"
+                  style={{ transform: `translateX(-${lobbyImageIndex * 100}%)` }}
+                >
+                  {lobbyImages.map((src) => (
+                    <img
+                      key={src}
+                      src={src}
+                      alt="GhostDraft Lobby View"
+                      className="w-full h-full object-cover flex-shrink-0"
+                    />
                   ))}
-                </div>
-
-                {/* Mock Matchup Content - Master Yi Example */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between p-4 bg-[var(--arcane-blue)]/50 rounded-lg border border-[var(--hextech-gold)]/20">
-                    <div className="flex items-center gap-4">
-                      <img
-                        src="https://ddragon.leagueoflegends.com/cdn/14.24.1/img/champion/MasterYi.png"
-                        alt="Master Yi"
-                        className="w-12 h-12 rounded-lg border border-[var(--hextech-gold)]/30"
-                      />
-                      <div>
-                        <div className="text-[var(--text-primary)] font-medium">Master Yi</div>
-                        <div className="text-[var(--text-muted)] text-sm">vs Rammus</div>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-2xl font-bold wr-low">43.8%</div>
-                      <div className="text-[var(--text-muted)] text-sm">Win Rate</div>
-                    </div>
-                  </div>
-
-                  <div className="text-[var(--text-secondary)] text-sm font-medium mb-2">Counter Matchups</div>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { champ: "Rammus", icon: "Rammus", wr: "43.8%", class: "wr-low" },
-                      { champ: "Jax", icon: "Jax", wr: "45.2%", class: "wr-low" },
-                      { champ: "Elise", icon: "Elise", wr: "46.1%", class: "wr-low" },
-                    ].map((item) => (
-                      <div
-                        key={item.champ}
-                        className="p-3 bg-[var(--arcane-blue)]/30 rounded-lg border border-[var(--hextech-gold)]/10 text-center hover:border-[var(--hextech-gold)]/30 transition-all"
-                      >
-                        <img
-                          src={`https://ddragon.leagueoflegends.com/cdn/14.24.1/img/champion/${item.icon}.png`}
-                          alt={item.champ}
-                          className="w-10 h-10 rounded-full mx-auto mb-2"
-                        />
-                        <div className="text-[var(--text-secondary)] text-sm">{item.champ}</div>
-                        <div className={`text-sm font-medium ${item.class}`}>{item.wr}</div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
               </div>
             </div>
-
-            {/* Decorative glow */}
-            <div className="absolute -inset-8 bg-[radial-gradient(ellipse_at_center,_var(--hextech-gold)_0%,_transparent_70%)] opacity-10 blur-3xl -z-10" />
+            <div className="flex flex-col gap-6 h-full">
+              <PreviewCard
+                src="/OverlayChampSelectBanPhase.png"
+                alt="GhostDraft Ban Phase"
+                title="Ban Phase"
+                description="Get ban recommendations based on your champion's counters"
+                onClick={() => setLightboxImage({ src: "/OverlayChampSelectBanPhase.png", alt: "GhostDraft Ban Phase" })}
+              />
+              <PreviewCard
+                src="/OverlayChampSelectItemTab.png"
+                alt="GhostDraft Item Tab"
+                title="Item Builds"
+                description="View optimal item builds with win rates by slot"
+                onClick={() => setLightboxImage({ src: "/OverlayChampSelectItemTab.png", alt: "GhostDraft Item Tab" })}
+              />
+              <PreviewCard
+                src="/InGameOverlay.png"
+                alt="GhostDraft In-Game Overlay"
+                title="In-Game"
+                description="Quick reference while playing"
+                onClick={() => setLightboxImage({ src: "/InGameOverlay.png", alt: "GhostDraft In-Game Overlay" })}
+              />
+            </div>
           </div>
+
+          {/* Lightbox Modal */}
+          {lightboxImage && (
+            <div
+              className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 cursor-pointer"
+              onClick={() => setLightboxImage(null)}
+            >
+              <button
+                className="absolute top-4 right-4 text-white/80 hover:text-white text-4xl font-light"
+                onClick={() => setLightboxImage(null)}
+              >
+                &times;
+              </button>
+              <img
+                src={lightboxImage.src}
+                alt={lightboxImage.alt}
+                className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
         </div>
       </section>
 
@@ -348,6 +357,32 @@ function StepCard({ number, title, description }: { number: string; title: strin
       </div>
       <h3 className="text-xl font-display font-semibold text-[var(--pale-gold)] mb-3">{title}</h3>
       <p className="text-[var(--text-secondary)] leading-relaxed">{description}</p>
+    </div>
+  );
+}
+
+function PreviewCard({ src, alt, title, description, onClick, large }: { src: string; alt: string; title: string; description: string; onClick: () => void; large?: boolean }) {
+  return (
+    <div className={`hex-card rounded-xl overflow-hidden group cursor-pointer ${large ? "h-full flex flex-col" : "flex-1"}`} onClick={onClick}>
+      {large && (
+        <div className="p-6 bg-[var(--deep-navy)]">
+          <h3 className="text-2xl font-display font-semibold text-[var(--pale-gold)] mb-2">{title}</h3>
+          <p className="text-base text-[var(--text-secondary)]">{description}</p>
+        </div>
+      )}
+      <div className={`relative ${large ? "flex-1 overflow-hidden" : ""}`}>
+        <img
+          src={src}
+          alt={alt}
+          className={`transition-all duration-500 group-hover:scale-105 ${large ? "w-full h-full object-cover" : "w-full h-auto"}`}
+        />
+      </div>
+      {!large && (
+        <div className="p-4 bg-[var(--deep-navy)]">
+          <h3 className="text-lg font-display font-semibold text-[var(--pale-gold)] mb-1">{title}</h3>
+          <p className="text-sm text-[var(--text-secondary)]">{description}</p>
+        </div>
+      )}
     </div>
   );
 }
