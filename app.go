@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"ghostdraft/internal/data"
 	"ghostdraft/internal/lcu"
@@ -20,8 +19,8 @@ type App struct {
 	champions        *lcu.ChampionRegistry
 	items            *lcu.ItemRegistry
 	championDB       *data.ChampionDB
-	statsDB          *data.StatsDB         // SQLite database for stats
-	statsProvider    *data.StatsProvider   // Stats queries (uses statsDB)
+	tursoClient      *data.TursoClient     // Turso database connection
+	statsProvider    *data.StatsProvider   // Stats queries (uses Turso with caching)
 	stopPoll         chan struct{}
 	lastFetchedChamp    int
 	lastFetchedEnemy    int
@@ -106,44 +105,27 @@ func (a *App) startup(ctx context.Context) {
 	a.RegisterToggleHotkey()
 }
 
-// initStats initializes the stats database and provider
+// initStats initializes the Turso connection and stats provider
 func (a *App) initStats() {
-	// Create local SQLite database for stats
-	statsDB, err := data.NewStatsDB()
+	// Connect to Turso
+	tursoClient, err := data.NewTursoClient()
 	if err != nil {
-		fmt.Printf("Failed to open stats database: %v\n", err)
+		fmt.Printf("Failed to connect to Turso: %v\n", err)
 		return
 	}
-	a.statsDB = statsDB
+	a.tursoClient = tursoClient
 
-	// Check for updates from remote manifest
-	manifestURL := os.Getenv("STATS_MANIFEST_URL")
-	if manifestURL == "" {
-		manifestURL = data.DefaultManifestURL
-	}
-
-	if err := statsDB.CheckForUpdates(manifestURL); err != nil {
-		fmt.Printf("Failed to check for stats updates: %v (using cached data)\n", err)
-	}
-
-	if !statsDB.HasData() {
-		fmt.Println("No stats data available")
-		return
-	}
-
-	// Create stats provider
-	provider, err := data.NewStatsProvider(statsDB)
+	// Create stats provider with caching
+	provider, err := data.NewStatsProvider(tursoClient)
 	if err != nil {
 		fmt.Printf("Stats provider not available: %v\n", err)
 		return
 	}
 
-	// If current patch not set from update, fetch from database
-	if provider.GetPatch() == "" {
-		if err := provider.FetchPatch(); err != nil {
-			fmt.Printf("No stats patch available: %v\n", err)
-			return
-		}
+	// Fetch current patch from Turso
+	if err := provider.FetchPatch(); err != nil {
+		fmt.Printf("No stats patch available: %v\n", err)
+		return
 	}
 
 	a.statsProvider = provider
@@ -158,7 +140,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.championDB != nil {
 		a.championDB.Close()
 	}
-	if a.statsDB != nil {
-		a.statsDB.Close()
+	if a.tursoClient != nil {
+		a.tursoClient.Close()
 	}
 }

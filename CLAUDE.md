@@ -88,15 +88,24 @@ LCU WebSocket → websocket.go:handleChampSelectEvent
 
 ### 2. Stats Data Distribution
 ```
-Reducer (JSONL files) → Aggregates stats → Exports data.json + manifest.json
-                                                      ↓ (hosted remotely)
-Client App (on startup) → Fetches manifest.json → Compares patch version
-                       → If newer: downloads data.json → Bulk inserts to SQLite
-                       → StatsProvider queries local SQLite
+Reducer (JSONL files) → Aggregates stats → Pushes to Turso
+                                                    ↓
+                                                 Turso DB
+                                                    ↓
+              ┌─────────────────────────────────────┴─────────────────────────────────────┐
+              ↓                                                                           ↓
+       Website (Next.js)                                                          Desktop App
+       Queries Turso for web UI                                                   Queries Turso directly
+                                                                                  (embedded read-only credentials)
+                                                                                  + In-memory caching
 ```
 
-### 3. Stats Provider (SQLite)
-The `internal/data/stats_queries.go` queries local SQLite database:
+**Note**: The desktop app embeds Turso credentials (read-only) at build time.
+Credentials are not publicly exposed but can be extracted from binary with effort.
+Data is public stats anyway - worst case someone reads your aggregated data.
+
+### 3. Stats Provider (Turso + Cache)
+The `internal/data/stats_queries.go` queries Turso directly with in-memory caching:
 - **FetchChampionData**: Item builds by slot position with win rates
 - **FetchAllMatchups**: All matchup win rates for a champion
 - **FetchCounterMatchups**: Top N counters (lowest win rate matchups <49%, min 10 games)
@@ -104,7 +113,10 @@ The `internal/data/stats_queries.go` queries local SQLite database:
 - **FetchMatchup**: Specific champion vs enemy win rate
 - **FetchTopChampionsByRole**: Meta champions by win rate per role
 
-### Database Tables (local SQLite)
+**Caching**: Results are cached in-memory per session. First query hits Turso (~100-200ms),
+subsequent identical queries return instantly from cache. Cache clears on app restart.
+
+### Database Tables (Turso)
 ```sql
 champion_stats      -- Champion win rates by patch/position
 champion_items      -- Item stats per champion/position (overall)
@@ -163,14 +175,36 @@ EventsOn('fullcomp:update', updateFullComp);
 - `lastItemFetchKey` - `"{champId}-{role}"` for items
 - `lastCounterFetchKey` - `"{enemyChampId}-{role}"` for counter picks
 
-## SQLite Databases
+## Databases
+
+### Local SQLite (Desktop App)
 Located at `{UserConfigDir}/GhostDraft/`:
 - `champions.db` - Static champion metadata (damage types, tags)
-- `stats.db` - Match statistics (downloaded from remote)
+
+### Turso (Cloud)
+Stats data is stored in Turso and queried directly by both website and desktop app:
+- `champion_stats`, `champion_items`, `champion_item_slots`, `champion_matchups`
 
 ## Environment Variables
+
+### Desktop App (.env in root - for development)
+```bash
+# Development only - overrides build-time values
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-token
 ```
-STATS_MANIFEST_URL=https://your-cdn.example.com/manifest.json  # Remote stats location
+
+### Production Build Variables
+Set these before running `build.ps1` or `build.sh`:
+```bash
+TURSO_DATABASE_URL=libsql://your-db.turso.io  # Turso database URL
+TURSO_AUTH_TOKEN=your-read-only-token         # Read-only Turso auth token
+```
+
+### Website (.env in website/)
+```bash
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-token
 ```
 
 ## Common Tasks
@@ -188,8 +222,19 @@ STATS_MANIFEST_URL=https://your-cdn.example.com/manifest.json  # Remote stats lo
 ## Build Commands
 ```bash
 go build ./...           # Check Go compiles
-wails dev                # Run in dev mode
-wails build              # Build production binary
+wails dev                # Run in dev mode (uses env vars for Turso)
+wails build              # Build dev binary (no embedded credentials)
+
+# Production build (embeds Turso credentials)
+./build.ps1              # Windows PowerShell
+./build.sh               # Linux/Mac/Git Bash
+```
+
+### Manual Production Build
+```bash
+wails build -ldflags "\
+-X 'ghostdraft/internal/data.TursoURL=libsql://your-db.turso.io' \
+-X 'ghostdraft/internal/data.TursoAuthToken=your-read-only-token'"
 ```
 
 ## Data Pipeline

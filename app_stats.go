@@ -2,41 +2,25 @@ package main
 
 import (
 	"fmt"
-	"os"
 
-	"ghostdraft/internal/data"
 	"ghostdraft/internal/lcu"
 )
 
-// ForceStatsUpdate forces a redownload of stats data
+// ForceStatsUpdate clears the cache and refreshes stats data from Turso
 func (a *App) ForceStatsUpdate() string {
-	if a.statsDB == nil {
-		return "Stats database not initialized"
+	if a.statsProvider == nil {
+		return "Stats provider not initialized"
 	}
 
-	manifestURL := os.Getenv("STATS_MANIFEST_URL")
-	if manifestURL == "" {
-		manifestURL = data.DefaultManifestURL
+	// Clear the query cache
+	a.statsProvider.ClearCache()
+
+	// Refetch patch info
+	if err := a.statsProvider.FetchPatch(); err != nil {
+		return fmt.Sprintf("Failed to refresh: %v", err)
 	}
 
-	if err := a.statsDB.ForceUpdate(manifestURL); err != nil {
-		return fmt.Sprintf("Update failed: %v", err)
-	}
-
-	// Recreate stats provider with new data
-	if a.statsDB.HasData() {
-		provider, err := data.NewStatsProvider(a.statsDB)
-		if err != nil {
-			return fmt.Sprintf("Provider creation failed: %v", err)
-		}
-		if provider.GetPatch() == "" {
-			provider.FetchPatch()
-		}
-		a.statsProvider = provider
-		return fmt.Sprintf("Updated to %s", provider.GetPatch())
-	}
-
-	return "Update completed but no data available"
+	return fmt.Sprintf("Cache cleared, using patch %s", a.statsProvider.GetPatch())
 }
 
 // GetPersonalStats returns aggregated personal stats from recent match history

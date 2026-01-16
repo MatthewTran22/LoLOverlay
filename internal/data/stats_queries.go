@@ -37,9 +37,9 @@ type BuildData struct {
 	Builds       []BuildPath
 }
 
-// StatsProvider fetches build data from our SQLite database
+// StatsProvider fetches build data from Turso with caching
 type StatsProvider struct {
-	db           *sql.DB
+	client       *TursoClient
 	currentPatch string
 }
 
@@ -69,23 +69,43 @@ type ChampionWinRate struct {
 	PickRate   float64
 }
 
-// NewStatsProvider creates a new stats provider from a StatsDB
-func NewStatsProvider(statsDB *StatsDB) (*StatsProvider, error) {
+// NewStatsProvider creates a new stats provider from a TursoClient
+func NewStatsProvider(client *TursoClient) (*StatsProvider, error) {
 	return &StatsProvider{
-		db:           statsDB.GetDB(),
-		currentPatch: statsDB.GetCurrentPatch(),
+		client: client,
 	}, nil
 }
 
-// Close is a no-op since the StatsDB owns the connection
+// Close is a no-op since the TursoClient owns the connection
 func (p *StatsProvider) Close() {
-	// Connection owned by StatsDB
+	// Connection owned by TursoClient
+}
+
+// ClearCache clears the query cache
+func (p *StatsProvider) ClearCache() {
+	p.client.ClearCache()
+}
+
+// db returns the underlying database connection
+func (p *StatsProvider) db() *sql.DB {
+	return p.client.GetDB()
+}
+
+// cache returns the query cache
+func (p *StatsProvider) cache() *QueryCache {
+	return p.client.GetCache()
 }
 
 // FetchPatch gets the latest patch from our database
 func (p *StatsProvider) FetchPatch() error {
+	// Check cache first
+	if cached, ok := p.cache().Get("current_patch"); ok {
+		p.currentPatch = cached.(string)
+		return nil
+	}
+
 	var patch string
-	err := p.db.QueryRow(`
+	err := p.db().QueryRow(`
 		SELECT patch FROM champion_stats
 		ORDER BY patch DESC
 		LIMIT 1
@@ -96,6 +116,7 @@ func (p *StatsProvider) FetchPatch() error {
 	}
 
 	p.currentPatch = patch
+	p.cache().Set("current_patch", patch)
 	fmt.Printf("[Stats] Using patch: %s\n", patch)
 	return nil
 }
@@ -107,8 +128,13 @@ func (p *StatsProvider) GetPatch() string {
 
 // GetMostPlayedRole returns the most common role for a champion based on game count
 func (p *StatsProvider) GetMostPlayedRole(championID int) string {
+	cacheKey := fmt.Sprintf("most_played_role:%d", championID)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.(string)
+	}
+
 	var position string
-	err := p.db.QueryRow(`
+	err := p.db().QueryRow(`
 		SELECT team_position FROM champion_stats
 		WHERE champion_id = ?
 		GROUP BY team_position
@@ -121,20 +147,26 @@ func (p *StatsProvider) GetMostPlayedRole(championID int) string {
 	}
 
 	// Convert database position back to role
+	var role string
 	switch position {
 	case "TOP":
-		return "top"
+		role = "top"
 	case "JUNGLE":
-		return "jungle"
+		role = "jungle"
 	case "MIDDLE":
-		return "middle"
+		role = "middle"
 	case "BOTTOM":
-		return "bottom"
+		role = "bottom"
 	case "UTILITY":
-		return "utility"
+		role = "utility"
 	default:
-		return ""
+		role = ""
 	}
+
+	if role != "" {
+		p.cache().Set(cacheKey, role)
+	}
+	return role
 }
 
 // roleToPosition converts role names to database team_position values
@@ -155,13 +187,18 @@ func roleToPosition(role string) string {
 	}
 }
 
-// FetchChampionData gets build data for a champion from our database
+// FetchChampionData gets build data for a champion from Turso with caching
 func (p *StatsProvider) FetchChampionData(championID int, championName string, role string) (*BuildData, error) {
+	cacheKey := fmt.Sprintf("build:%d:%s", championID, role)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.(*BuildData), nil
+	}
+
 	position := roleToPosition(role)
 
 	// Get total games for this champion/position (aggregate across all patches)
 	var totalGames int
-	err := p.db.QueryRow(`
+	err := p.db().QueryRow(`
 		SELECT COALESCE(SUM(matches), 0) FROM champion_stats
 		WHERE champion_id = ? AND team_position = ?
 	`, championID, position).Scan(&totalGames)
@@ -176,12 +213,15 @@ func (p *StatsProvider) FetchChampionData(championID int, championName string, r
 		return nil, err
 	}
 
-	return &BuildData{
+	result := &BuildData{
 		ChampionID:   championID,
 		ChampionName: championName,
 		Role:         role,
 		Builds:       []BuildPath{build},
-	}, nil
+	}
+
+	p.cache().Set(cacheKey, result)
+	return result, nil
 }
 
 // constructBuildPathFromSlots creates a build path using item slot data
@@ -193,7 +233,7 @@ func (p *StatsProvider) constructBuildPathFromSlots(championID int, position str
 	// Uses window function to calculate pick_rate from sampled data (avoids denominator trap)
 	// Excludes boots and any items in the excluded map
 	getSlotItems := func(slot int, limit int, excludeBoots bool) ([]ItemOption, error) {
-		rows, err := p.db.Query(`
+		rows, err := p.db().Query(`
 			SELECT
 				item_id,
 				SUM(wins) as wins,
@@ -245,7 +285,7 @@ func (p *StatsProvider) constructBuildPathFromSlots(championID int, position str
 
 	// Get best boots across all slots
 	var bestBoots int
-	bootsRow := p.db.QueryRow(`
+	bootsRow := p.db().QueryRow(`
 		SELECT item_id
 		FROM champion_item_slots
 		WHERE champion_id = ? AND team_position = ?
@@ -371,7 +411,7 @@ func (p *StatsProvider) HasData(championID int, role string) bool {
 	position := roleToPosition(role)
 
 	var count int
-	err := p.db.QueryRow(`
+	err := p.db().QueryRow(`
 		SELECT COUNT(*) FROM champion_items
 		WHERE champion_id = ? AND team_position = ?
 	`, championID, position).Scan(&count)
@@ -381,13 +421,18 @@ func (p *StatsProvider) HasData(championID int, role string) bool {
 
 // FetchMatchup returns the win rate for a specific champion vs enemy matchup
 func (p *StatsProvider) FetchMatchup(championID int, enemyChampionID int, role string) (*MatchupStat, error) {
+	cacheKey := fmt.Sprintf("matchup:%d:%d:%s", championID, enemyChampionID, role)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.(*MatchupStat), nil
+	}
+
 	position := roleToPosition(role)
 
 	var m MatchupStat
 	m.EnemyChampionID = enemyChampionID
 
 	// Aggregate across all patches
-	err := p.db.QueryRow(`
+	err := p.db().QueryRow(`
 		SELECT COALESCE(SUM(wins), 0), COALESCE(SUM(matches), 0)
 		FROM champion_matchups
 		WHERE champion_id = ? AND team_position = ? AND enemy_champion_id = ?
@@ -398,6 +443,7 @@ func (p *StatsProvider) FetchMatchup(championID int, enemyChampionID int, role s
 	}
 
 	m.WinRate = float64(m.Wins) / float64(m.Matches) * 100
+	p.cache().Set(cacheKey, &m)
 	return &m, nil
 }
 
@@ -406,7 +452,7 @@ func (p *StatsProvider) FetchAllMatchups(championID int, role string) ([]Matchup
 	position := roleToPosition(role)
 
 	// Aggregate across all patches
-	rows, err := p.db.Query(`
+	rows, err := p.db().Query(`
 		SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
 		FROM champion_matchups
 		WHERE champion_id = ? AND team_position = ?
@@ -437,6 +483,11 @@ func (p *StatsProvider) FetchAllMatchups(championID int, role string) ([]Matchup
 // FetchCounterMatchups returns the champions that counter the specified champion
 // (i.e., matchups where the specified champion has the lowest win rate)
 func (p *StatsProvider) FetchCounterMatchups(championID int, role string, limit int) ([]MatchupStat, error) {
+	cacheKey := fmt.Sprintf("counters:%d:%s:%d", championID, role, limit)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.([]MatchupStat), nil
+	}
+
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -445,7 +496,7 @@ func (p *StatsProvider) FetchCounterMatchups(championID int, role string, limit 
 
 	// Query matchups ordered by lowest win rate (hardest counters first)
 	// Only include matchups where win rate < 49% (true counters)
-	rows, err := p.db.Query(`
+	rows, err := p.db().Query(`
 		SELECT enemy_champion_id, SUM(wins) as wins, SUM(matches) as matches
 		FROM champion_matchups
 		WHERE champion_id = ? AND team_position = ?
@@ -473,12 +524,18 @@ func (p *StatsProvider) FetchCounterMatchups(championID int, role string, limit 
 		matchups = append(matchups, m)
 	}
 
+	p.cache().Set(cacheKey, matchups)
 	return matchups, nil
 }
 
 // FetchCounterPicks returns champions that counter a specific enemy champion in a role
 // (i.e., champions with high win rate against the enemy)
 func (p *StatsProvider) FetchCounterPicks(enemyChampionID int, role string, limit int) ([]MatchupStat, error) {
+	cacheKey := fmt.Sprintf("counterpicks:%d:%s:%d", enemyChampionID, role, limit)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.([]MatchupStat), nil
+	}
+
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -487,7 +544,7 @@ func (p *StatsProvider) FetchCounterPicks(enemyChampionID int, role string, limi
 
 	// Query champions that have high win rate against this enemy
 	// We flip the query - find champions where they beat the enemy
-	rows, err := p.db.Query(`
+	rows, err := p.db().Query(`
 		SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
 		FROM champion_matchups
 		WHERE enemy_champion_id = ? AND team_position = ?
@@ -519,12 +576,18 @@ func (p *StatsProvider) FetchCounterPicks(enemyChampionID int, role string, limi
 		matchups = append(matchups, m)
 	}
 
+	p.cache().Set(cacheKey, matchups)
 	return matchups, nil
 }
 
 // FetchTopChampionsByRole returns the top N champions by win rate for a given role
 // Uses tiered logic: prefer current patch, fallback to aggregated if not enough data
 func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]ChampionWinRate, error) {
+	cacheKey := fmt.Sprintf("meta:%s:%d", role, limit)
+	if cached, ok := p.cache().Get(cacheKey); ok {
+		return cached.([]ChampionWinRate), nil
+	}
+
 	position := roleToPosition(role)
 
 	if limit <= 0 {
@@ -534,7 +597,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 	// Check if current patch has enough games
 	var currentPatchGames int
 	if p.currentPatch != "" {
-		p.db.QueryRow(`
+		p.db().QueryRow(`
 			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
 			WHERE team_position = ? AND patch = ?
 		`, position, p.currentPatch).Scan(&currentPatchGames)
@@ -551,7 +614,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 		// Current patch has enough data - use it exclusively
 		fmt.Printf("[Stats] Using current patch %s only for %s (%d games)\n", p.currentPatch, role, currentPatchGames)
 
-		err = p.db.QueryRow(`
+		err = p.db().QueryRow(`
 			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
 			WHERE team_position = ? AND patch = ?
 		`, position, p.currentPatch).Scan(&totalGames)
@@ -559,7 +622,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 			totalGames = 0
 		}
 
-		rows, err = p.db.Query(`
+		rows, err = p.db().Query(`
 			SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
 			FROM champion_stats
 			WHERE team_position = ? AND patch = ?
@@ -572,7 +635,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 		// Not enough data in current patch - aggregate all patches
 		fmt.Printf("[Stats] Aggregating all patches for %s (current patch %s has only %d games)\n", role, p.currentPatch, currentPatchGames)
 
-		err = p.db.QueryRow(`
+		err = p.db().QueryRow(`
 			SELECT COALESCE(SUM(matches), 0) FROM champion_stats
 			WHERE team_position = ?
 		`, position).Scan(&totalGames)
@@ -580,7 +643,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 			totalGames = 0
 		}
 
-		rows, err = p.db.Query(`
+		rows, err = p.db().Query(`
 			SELECT champion_id, SUM(wins) as wins, SUM(matches) as matches
 			FROM champion_stats
 			WHERE team_position = ?
@@ -611,6 +674,7 @@ func (p *StatsProvider) FetchTopChampionsByRole(role string, limit int) ([]Champ
 		champions = append(champions, c)
 	}
 
+	p.cache().Set(cacheKey, champions)
 	return champions, nil
 }
 
