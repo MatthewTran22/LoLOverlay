@@ -1,22 +1,21 @@
 # Data Analyzer - Match History Collection & Aggregation
 
 ## Purpose
-Collect match history data from Riot API and aggregate stats. Supports two output modes:
-1. JSON export for distribution to desktop app
-2. Direct push to Turso for website consumption
+Collect match history data from Riot API and aggregate stats, pushing directly to Turso for consumption by both the desktop app and website.
 
 ## Architecture
 
 ```
-Riot API → Collector (spider) → JSONL files → Reducer
-                                    ↓              ↓
-                              hot/ → warm/ → cold/ ├──→ data.json (desktop app)
-                                                   └──→ Turso DB (website)
+Riot API → Collector (spider) → JSONL files → Reducer → Turso DB
+                                    ↓                       ↓
+                              hot/ → warm/ → cold/    ┌─────┴─────┐
+                                                      ↓           ↓
+                                                 Desktop App   Website
 ```
 
 ### Components
 1. **Collector** - Spider that crawls match history from Riot API
-2. **Reducer** - Processes JSONL files into aggregated stats, exports to JSON and pushes to Turso
+2. **Reducer** - Processes JSONL files into aggregated stats and pushes to Turso
 3. **Server** - Web UI for viewing collected data (optional)
 
 ## Quick Start
@@ -29,12 +28,8 @@ go run cmd/pipeline/main.go --riot-id="Player#NA1" --max-players=100
 # 1. Collect match data (spider from a starting player)
 go run cmd/collector/main.go --riot-id="Player#NA1"
 
-# 2. Process collected data (exports JSON + pushes to Turso by default)
+# 2. Process collected data and push to Turso
 go run cmd/reducer/main.go
-
-# Both JSON export and Turso push happen by default:
-# - JSON export: always runs (use --skip-json to disable)
-# - Turso push: runs if TURSO_DATABASE_URL is set (use --skip-turso to disable)
 ```
 
 ### Pipeline Options
@@ -43,17 +38,13 @@ go run cmd/pipeline/main.go \
   --riot-id="Player#NA1" \  # Starting player (required)
   --count=20 \              # Matches per player (default: 20)
   --max-players=100 \       # Max active players to collect (default: 100)
-  --output-dir=./export \   # Output directory (default: ./export)
   --reduce-only             # Skip collection, only run reducer
 ```
 
 ### Reducer Options
 ```bash
 go run cmd/reducer/main.go \
-  --output-dir=./export \    # Directory for JSON output (default: ./export)
-  --skip-json                # Skip JSON export
-  --skip-turso               # Skip Turso push
-  --skip-release             # Skip GitHub release
+  --skip-turso               # Skip Turso push (for testing)
 ```
 
 ## Environment Variables
@@ -62,13 +53,9 @@ Create `.env` file:
 RIOT_API_KEY=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 BLOB_STORAGE_PATH=./data
 
-# Turso (runs by default if set)
+# Turso (required)
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-token
-
-# GitHub releases (runs by default if set)
-GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
-GITHUB_REPO=MatthewTran22/LoLOverlay-Data  # Optional, defaults to this
 ```
 
 ## Collection Strategy
@@ -150,16 +137,7 @@ This reduces API calls by ~40% while maintaining statistically representative bu
    ├── Recreate indexes
    └── Delete old patches (WHERE patch < min_patch)
 
-4. EXPORT JSON
-   ├── Write data.json (all stats)
-   └── Write manifest.json (version with build number, e.g., 15.24.3)
-
-5. GITHUB RELEASE (if GITHUB_TOKEN set)
-   ├── Check if release exists → delete if so
-   ├── Create release with patch version as tag
-   └── Upload data.json as release asset
-
-6. ARCHIVE → warm/*.jsonl → cold/*.jsonl.gz
+4. ARCHIVE → warm/*.jsonl → cold/*.jsonl.gz
 ```
 
 ### Reducer Features
@@ -167,7 +145,7 @@ This reduces API calls by ~40% while maintaining statistically representative bu
 - **Sampling-aware aggregation**:
   - Item stats (champion_items): Uses `item0-5` from ALL matches (100% sample)
   - Item slot stats (champion_item_slots): Uses `buildOrder` from sampled matches (~20%)
-- **Versioned upserts**: Data accumulates with build numbers (15.24.1, 15.24.2, 15.24.3)
+- **Upsert pattern**: Data accumulates into existing patch buckets via `ON CONFLICT DO UPDATE`
 - **Item deduplication**: Only counts unique items per player
 - **Completed items only**: Filters out components using Data Dragon (items with no "into" field, cost >= 1000g)
 - **Matchup calculation**: Groups participants by matchId to find lane opponents
@@ -244,32 +222,6 @@ CREATE INDEX idx_champion_item_slots_champ_pos ON champion_item_slots(champion_i
 CREATE INDEX idx_champion_matchups_champ_pos ON champion_matchups(champion_id, team_position);
 ```
 
-## JSON Export Format
-
-### manifest.json
-```json
-{
-  "version": "15.24",
-  "min_patch": "15.21",
-  "data_url": "",
-  "updated_at": "2025-01-15T10:30:00Z"
-}
-```
-
-The `min_patch` field tells clients to delete data older than this patch.
-
-### data.json
-```json
-{
-  "patch": "15.24",
-  "generatedAt": "2025-01-15T10:30:00Z",
-  "championStats": [...],
-  "championItems": [...],
-  "championItemSlots": [...],
-  "championMatchups": [...]
-}
-```
-
 ## JSONL Record Format
 ```json
 {
@@ -310,7 +262,7 @@ When empty/missing, reducer uses `item0-5` for item stats but skips item slot st
 data-analyzer/
 ├── cmd/
 │   ├── collector/       # Spider crawler CLI
-│   ├── reducer/         # JSONL → JSON/Turso aggregator
+│   ├── reducer/         # JSONL → Turso aggregator
 │   ├── pipeline/        # Combined collector + reducer
 │   ├── server/          # Web UI server (optional)
 │   └── ui/              # Web UI for pipeline control
@@ -328,8 +280,7 @@ data-analyzer/
 │   └── db/
 │       └── turso.go     # Turso client with bulk loading, upserts
 ├── Dockerfile           # Multi-stage build for pipeline
-├── docker-compose.yml   # Single service (pipeline + Turso)
-└── export/              # Output directory (gitignored)
+└── docker-compose.yml   # Single service (pipeline + Turso)
 ```
 
 ## Docker
@@ -348,7 +299,6 @@ services:
       - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}
     volumes:
       - ./data:/app/data
-      - ./export:/app/export
 ```
 
 ### Running with Docker
