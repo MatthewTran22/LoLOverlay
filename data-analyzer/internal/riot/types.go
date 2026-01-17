@@ -72,6 +72,69 @@ type TimelineEvent struct {
 	ItemID        int    `json:"itemId,omitempty"`
 }
 
+// LeagueEntryResponse represents a ranked league entry from /lol/league/v4/entries/by-puuid
+type LeagueEntryResponse struct {
+	LeagueID     string `json:"leagueId"`
+	SummonerID   string `json:"summonerId"`
+	QueueType    string `json:"queueType"` // RANKED_SOLO_5x5, RANKED_FLEX_SR
+	Tier         string `json:"tier"`      // IRON, BRONZE, SILVER, GOLD, PLATINUM, EMERALD, DIAMOND, MASTER, GRANDMASTER, CHALLENGER
+	Rank         string `json:"rank"`      // I, II, III, IV
+	LeaguePoints int    `json:"leaguePoints"`
+	Wins         int    `json:"wins"`
+	Losses       int    `json:"losses"`
+}
+
+// Tier order for comparison (higher index = higher rank)
+var TierOrder = map[string]int{
+	"IRON":        0,
+	"BRONZE":      1,
+	"SILVER":      2,
+	"GOLD":        3,
+	"PLATINUM":    4,
+	"EMERALD":     5,
+	"DIAMOND":     6,
+	"MASTER":      7,
+	"GRANDMASTER": 8,
+	"CHALLENGER":  9,
+}
+
+// Division order (higher index = higher rank within tier)
+var DivisionOrder = map[string]int{
+	"IV":  0,
+	"III": 1,
+	"II":  2,
+	"I":   3,
+}
+
+// IsEmerald4OrHigher checks if the rank is Emerald 4 or above
+func IsEmerald4OrHigher(tier, division string) bool {
+	tierIdx, tierExists := TierOrder[tier]
+	if !tierExists {
+		return false
+	}
+
+	// Master+ tiers have no division and are all above Emerald
+	if tierIdx >= TierOrder["MASTER"] {
+		return true
+	}
+
+	// Below Emerald
+	if tierIdx < TierOrder["EMERALD"] {
+		return false
+	}
+
+	// Emerald or Diamond - check division
+	// For Emerald, any division (IV, III, II, I) qualifies
+	// For Diamond, any division qualifies
+	if tierIdx > TierOrder["EMERALD"] {
+		return true
+	}
+
+	// Exactly Emerald - all divisions qualify (IV is the minimum)
+	_, divExists := DivisionOrder[division]
+	return divExists
+}
+
 // Items that should be excluded from build order (consumables, components, etc.)
 var ExcludedItems = map[int]bool{
 	// Potions and consumables

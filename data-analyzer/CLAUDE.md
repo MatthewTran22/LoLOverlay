@@ -72,7 +72,11 @@ TURSO_AUTH_TOKEN=your-token
    └── Resolve starting player (--riot-id → PUUID)
 
 2. SPIDER LOOP (worker pool with producer-consumer pattern)
-   ├── Producer: Pop player from queue, fetch match history
+   ├── Producer: Pop player from queue
+   ├── Check rank via Riot API (must be Emerald 4+)
+   │   ├── Skip if no solo queue rank
+   │   └── Skip if below Emerald 4
+   ├── Fetch match history for qualified players
    ├── Dispatch match IDs to worker pool (default 10 workers)
    │
    └── Workers process each match:
@@ -87,6 +91,17 @@ TURSO_AUTH_TOKEN=your-token
 
 4. SHUTDOWN → Flush to warm/
 ```
+
+### Rank Filtering
+Only players Emerald 4 or higher are collected:
+- **Emerald IV, III, II, I** - minimum qualifying ranks
+- **Diamond, Master, Grandmaster, Challenger** - all included
+- **Below Emerald 4** - skipped (Iron through Platinum, Emerald unranked)
+
+This ensures data quality by focusing on higher-skill games where builds and matchups are more refined.
+
+**API call for rank check** (1 call per player):
+- `/lol/league/v4/entries/by-puuid/{puuid}` - get ranked entries directly
 
 ### Statistical Sampling Strategy
 To reproduce U.GG-style build order stats without fetching expensive timeline for every match:
@@ -103,12 +118,14 @@ This reduces API calls by ~40% while maintaining statistically representative bu
 - **Early break**: Once we hit an old patch match, skip remaining (they're older)
 - **goccy/go-json**: Fast JSON parsing (~2x faster than encoding/json)
 
-### API Calls Per Player (with 20% timeline sampling)
-| Scenario | Old (100% timeline) | New (20% sampling) |
-|----------|---------------------|-------------------|
-| 20 current patch games | 1 + 40 = 41 | 1 + 24 = 25 |
-| 10 current patch games | 1 + 20 = 21 | 1 + 12 = 13 |
-| 5 current patch games | 1 + 10 = 11 | 1 + 6 = 7 |
+### API Calls Per Player (with rank check + 20% timeline sampling)
+| Scenario | Calls Breakdown |
+|----------|----------------|
+| Rank check | 1 (league entries by PUUID) |
+| Match history | 1 |
+| 20 current patch games | 1 + 1 + 24 = 26 (20 details + ~4 timelines) |
+| 10 current patch games | 1 + 1 + 12 = 14 (10 details + ~2 timelines) |
+| Player below Emerald 4 | 1 (only rank check, then skip) |
 
 ## Reducer Workflow
 
@@ -246,10 +263,14 @@ When empty/missing, reducer uses `item0-5` for item stats but skips item slot st
 
 ## Riot API Endpoints Used
 
+### Americas API (americas.api.riotgames.com)
 1. **Account Lookup**: `/riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}`
 2. **Match History**: `/lol/match/v5/matches/by-puuid/{puuid}/ids?queue=420&count=20`
 3. **Match Details**: `/lol/match/v5/matches/{matchId}`
 4. **Match Timeline**: `/lol/match/v5/matches/{matchId}/timeline` (for build order)
+
+### Regional API (na1.api.riotgames.com)
+5. **Ranked Entries by PUUID**: `/lol/league/v4/entries/by-puuid/{puuid}` (get rank for filtering)
 
 ## Rate Limits (Dev Key)
 - 20 requests/second

@@ -15,6 +15,7 @@ import (
 const (
 	// API base URLs
 	americasBaseURL = "https://americas.api.riotgames.com"
+	na1BaseURL      = "https://na1.api.riotgames.com" // Regional URL for summoner/league endpoints
 
 	// Rate limit settings (conservative: 90 req/2min instead of 100)
 	maxRequestsPer2Min = 90
@@ -186,6 +187,87 @@ func (c *Client) GetTimeline(ctx context.Context, matchID string) (*TimelineResp
 	var timeline TimelineResponse
 	err := c.doRequest(ctx, url, &timeline)
 	return &timeline, err
+}
+
+// GetRankedEntriesByPUUID fetches ranked entries directly by PUUID
+func (c *Client) GetRankedEntriesByPUUID(ctx context.Context, puuid string) ([]LeagueEntryResponse, error) {
+	url := fmt.Sprintf("%s/lol/league/v4/entries/by-puuid/%s", na1BaseURL, puuid)
+
+	var entries []LeagueEntryResponse
+	err := c.doRequest(ctx, url, &entries)
+	return entries, err
+}
+
+// GetSoloQueueRank fetches the solo queue rank for a player by PUUID
+// Returns tier, division, and whether they have a solo queue rank
+func (c *Client) GetSoloQueueRank(ctx context.Context, puuid string) (tier string, division string, hasRank bool, err error) {
+	entries, err := c.GetRankedEntriesByPUUID(ctx, puuid)
+	if err != nil {
+		return "", "", false, fmt.Errorf("failed to get ranked entries: %w", err)
+	}
+
+	// Find solo queue entry
+	for _, entry := range entries {
+		if entry.QueueType == "RANKED_SOLO_5x5" {
+			return entry.Tier, entry.Rank, true, nil
+		}
+	}
+
+	// No solo queue rank found
+	return "", "", false, nil
+}
+
+// ChallengerLeagueResponse represents the challenger league
+type ChallengerLeagueResponse struct {
+	Tier    string                   `json:"tier"`
+	LeagueID string                  `json:"leagueId"`
+	Queue   string                   `json:"queue"`
+	Entries []ChallengerLeagueEntry  `json:"entries"`
+}
+
+type ChallengerLeagueEntry struct {
+	SummonerID   string `json:"summonerId"`
+	PUUID        string `json:"puuid"`
+	LeaguePoints int    `json:"leaguePoints"`
+	Rank         string `json:"rank"`
+	Wins         int    `json:"wins"`
+	Losses       int    `json:"losses"`
+}
+
+// GetChallengerLeague fetches the challenger league for solo queue
+func (c *Client) GetChallengerLeague(ctx context.Context) (*ChallengerLeagueResponse, error) {
+	url := fmt.Sprintf("%s/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5", na1BaseURL)
+
+	var league ChallengerLeagueResponse
+	err := c.doRequest(ctx, url, &league)
+	return &league, err
+}
+
+// GetTopChallengerPUUID fetches the PUUID of a top challenger player
+// Returns the highest LP player's PUUID
+func (c *Client) GetTopChallengerPUUID(ctx context.Context) (string, error) {
+	league, err := c.GetChallengerLeague(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get challenger league: %w", err)
+	}
+
+	if len(league.Entries) == 0 {
+		return "", fmt.Errorf("no challenger players found")
+	}
+
+	// Find highest LP player
+	topPlayer := league.Entries[0]
+	for _, entry := range league.Entries[1:] {
+		if entry.LeaguePoints > topPlayer.LeaguePoints {
+			topPlayer = entry
+		}
+	}
+
+	if topPlayer.PUUID == "" {
+		return "", fmt.Errorf("top challenger player has no PUUID")
+	}
+
+	return topPlayer.PUUID, nil
 }
 
 // GetCurrentPatch fetches the current game patch from Data Dragon

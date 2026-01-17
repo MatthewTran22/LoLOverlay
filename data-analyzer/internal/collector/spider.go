@@ -62,6 +62,7 @@ type Spider struct {
 	activePlayerCount  int64
 	totalMatches       int64
 	timelinesCollected int64 // Track how many timelines we fetched
+	playersSkippedRank int64 // Players skipped due to low rank
 	startTime          time.Time
 
 	// Shutdown
@@ -177,6 +178,24 @@ func (s *Spider) producerLoop(ctx context.Context) {
 			continue
 		}
 
+		// Check player rank - skip if below Emerald 4
+		tier, division, hasRank, err := s.client.GetSoloQueueRank(ctx, puuid)
+		if err != nil {
+			log.Printf("[Producer] Failed to get rank for %s: %v (skipping)", puuid[:16], err)
+			atomic.AddInt64(&s.playersSkippedRank, 1)
+			continue
+		}
+		if !hasRank {
+			log.Printf("[Producer] Player %s has no solo queue rank (skipping)", puuid[:16])
+			atomic.AddInt64(&s.playersSkippedRank, 1)
+			continue
+		}
+		if !riot.IsEmerald4OrHigher(tier, division) {
+			log.Printf("[Producer] Player %s is %s %s - below Emerald 4 (skipping)", puuid[:16], tier, division)
+			atomic.AddInt64(&s.playersSkippedRank, 1)
+			continue
+		}
+
 		// Fetch match history for this player
 		matchIDs, err := s.client.GetMatchHistory(ctx, puuid, s.matchesPerPlayer)
 		if err != nil {
@@ -185,9 +204,9 @@ func (s *Spider) producerLoop(ctx context.Context) {
 		}
 
 		elapsed := time.Since(s.startTime)
-		fmt.Printf("\n[Player %d/%d] [%s] Processing: %s... (%d matches)\n",
+		fmt.Printf("\n[Player %d/%d] [%s] Processing: %s... (%s %s, %d matches)\n",
 			atomic.LoadInt64(&s.activePlayerCount), s.maxPlayers,
-			formatDuration(elapsed), puuid[:16], len(matchIDs))
+			formatDuration(elapsed), puuid[:16], tier, division, len(matchIDs))
 
 		// Track if this player has current patch matches
 		currentPatchCount := 0
@@ -472,10 +491,12 @@ func (s *Spider) printSummary() {
 	totalMatches := atomic.LoadInt64(&s.totalMatches)
 	playerCount := atomic.LoadInt64(&s.activePlayerCount)
 	timelinesCollected := atomic.LoadInt64(&s.timelinesCollected)
+	playersSkipped := atomic.LoadInt64(&s.playersSkippedRank)
 
 	fmt.Printf("\n=== Spider Complete ===\n")
 	fmt.Printf("Total time: %s\n", formatDuration(elapsed))
-	fmt.Printf("Players processed: %d\n", playerCount)
+	fmt.Printf("Players processed: %d (Emerald 4+)\n", playerCount)
+	fmt.Printf("Players skipped (below Emerald 4 / no rank): %d\n", playersSkipped)
 	fmt.Printf("Matches written: %d\n", totalMatches)
 	fmt.Printf("Total records (participants): %d\n", totalMatches*10)
 
