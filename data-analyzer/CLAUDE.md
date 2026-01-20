@@ -238,6 +238,98 @@ func (c *WarmFileCounter) Count() int64 // Get current count
 func (c *WarmFileCounter) Reset()       // Reset to 0, allows callback to fire again
 ```
 
+#### StateMachine (state.go)
+```go
+// State represents the current state of the continuous collector
+type State int32
+
+const (
+    StateStartup       State = iota // Initial state, seeding from Challenger
+    StateCollecting                 // Actively collecting matches
+    StateReducing                   // Aggregating warm files, archiving to cold
+    StatePushing                    // Pushing aggregated data to Turso
+    StateWaitingForKey              // API key expired, waiting for new key
+    StateFreshRestart               // Clearing state for new session
+    StateShutdown                   // Graceful shutdown in progress
+)
+
+// StateMachine manages state transitions with atomic operations
+type StateMachine struct { ... }
+
+func NewStateMachine() *StateMachine
+func (sm *StateMachine) Current() State
+func (sm *StateMachine) TransitionTo(to State) error      // Validates transition
+func (sm *StateMachine) TryTransitionToReducing() bool    // Atomic CAS for reduce trigger
+func (sm *StateMachine) IsCollecting() bool
+func (sm *StateMachine) CanReduce() bool
+func (sm *StateMachine) OnTransition(callback func(from, to State))
+func (sm *StateMachine) WaitForState(target State, timeout time.Duration) bool
+```
+
+**Valid State Transitions:**
+```
+STARTUP → COLLECTING → REDUCING → PUSHING → COLLECTING (normal cycle)
+                                         → WAITING_FOR_KEY (key expired)
+WAITING_FOR_KEY → FRESH_RESTART → STARTUP (new key received)
+Any state → SHUTDOWN (graceful shutdown)
+```
+
+#### ContinuousCollector (continuous.go)
+```go
+// ContinuousCollector orchestrates the continuous collection pipeline
+type ContinuousCollector struct { ... }
+
+// Configuration
+type ContinuousCollectorConfig struct {
+    WarmFileThreshold  int64         // Files before reduce (default: 10)
+    KeyPollInterval    time.Duration // Poll interval for new keys (default: 5min)
+    ShutdownTimeout    time.Duration // Max shutdown wait (default: 5min)
+    BloomResetInterval int           // Reduce cycles before bloom reset (default: 5)
+}
+
+func NewContinuousCollector(
+    spider SpiderRunner,
+    reduceFunc ReducerFunc,
+    keyValidator KeyValidator,
+    keyProvider KeyProvider,
+    notifyFunc NotifyFunc,
+    config ContinuousCollectorConfig,
+) *ContinuousCollector
+
+func (cc *ContinuousCollector) Run(ctx context.Context) error  // Main loop
+func (cc *ContinuousCollector) Shutdown(ctx context.Context)   // Graceful shutdown
+func (cc *ContinuousCollector) State() State                   // Current state
+func (cc *ContinuousCollector) IncrementWarmFileCount()        // Called by rotator
+```
+
+**Interfaces for dependency injection:**
+```go
+// SpiderRunner runs the match collection loop
+type SpiderRunner interface {
+    RunContinuous(ctx context.Context) error
+    Reset()
+    SeedFromChallenger(ctx context.Context) error
+}
+
+// KeyValidator validates API keys
+type KeyValidator interface {
+    ValidateKey(key string) (bool, error)
+}
+
+// KeyProvider provides new API keys (e.g., from Discord)
+type KeyProvider interface {
+    WaitForKey(ctx context.Context) (string, error)
+}
+```
+
+**API Key Error Detection:**
+```go
+var ErrAPIKeyExpired = errors.New("api key expired (401)")
+var ErrAPIKeyForbidden = errors.New("api key forbidden (403)")
+
+func IsAPIKeyError(err error) bool  // Checks for 401/403 errors
+```
+
 ### Reduce Cycle (Continuous Mode)
 ```
 1. Acquire WarmLock (exclusive)
@@ -383,12 +475,14 @@ data-analyzer/
 │       ├── main.go      # HTTP server with SSE streaming
 │       └── templates/   # HTML templates
 ├── internal/
-│   ├── collector/       # Spider + Reducer components
+│   ├── collector/       # Spider + Reducer + Continuous Collector components
 │   │   ├── spider.go        # Producer-consumer pattern, bloom filters, timeline sampling
 │   │   ├── reducer.go       # In-memory aggregation + archive (AggregateWarmFiles, ArchiveWarmToCold)
 │   │   ├── turso_pusher.go  # Async Turso push queue (TursoPusher, DataPusher interface)
 │   │   ├── warmlock.go      # RWMutex wrapper for warm directory synchronization
-│   │   └── warmcounter.go   # Atomic counter to trigger reduce at N file rotations
+│   │   ├── warmcounter.go   # Atomic counter to trigger reduce at N file rotations
+│   │   ├── state.go         # State machine for continuous collector (7 states, transitions)
+│   │   └── continuous.go    # ContinuousCollector orchestrator (main loop, coordination)
 │   ├── riot/            # Riot API client + Data Dragon
 │   │   ├── client.go    # HTTP client with rate limiting
 │   │   └── types.go     # API response structs
@@ -420,6 +514,12 @@ go test ./internal/riot -run TestGetSoloQueueRank_Integration -v
 
 # Reducer integration tests (uses in-memory SQLite, no external deps)
 go test ./internal/collector/... -run "^Test(ReduceCycle|TursoPush|FullPipeline)" -v
+
+# State machine and continuous collector tests (no external deps)
+go test ./internal/collector/... -run "^Test(State|ContinuousCollector)" -v
+
+# Run with race detector (recommended for concurrency testing)
+go test -race ./internal/collector/... -v
 ```
 
 ### Test Files (internal/collector/)
@@ -432,6 +532,9 @@ go test ./internal/collector/... -run "^Test(ReduceCycle|TursoPush|FullPipeline)
 | `warmlock_integration_test.go` | Stress tests for lock contention |
 | `warmcounter_test.go` | Unit tests for atomic file counter |
 | `warmcounter_integration_test.go` | Integration tests with rotator, concurrency stress tests |
+| `state_test.go` | Unit tests for state machine (transitions, atomicity, callbacks) |
+| `continuous_test.go` | Unit tests for ContinuousCollector (triggers, key handling) |
+| `continuous_integration_test.go` | Integration tests for full state cycles, lock coordination |
 | `spider_test.go` | Data collection tests (requires API key) |
 
 ### Test Naming Convention
