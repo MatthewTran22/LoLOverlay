@@ -130,6 +130,11 @@ type ContinuousCollector struct {
 	shutdownCh       chan struct{}
 	shutdownOnce     sync.Once
 
+	// Stats tracking for notifications
+	matchesCollected atomic.Int64
+	startTime        time.Time
+	lastReduceTime   atomic.Value // stores time.Time
+
 	// Synchronization
 	wg sync.WaitGroup
 	mu sync.Mutex
@@ -154,7 +159,9 @@ func NewContinuousCollector(
 		keyProvider:  keyProvider,
 		notifyFunc:   notifyFunc,
 		shutdownCh:   make(chan struct{}),
+		startTime:    time.Now(),
 	}
+	cc.lastReduceTime.Store(time.Time{})
 
 	// Create warm file counter with reduce trigger callback
 	cc.warmFileCounter = NewWarmFileCounter(config.WarmFileThreshold, cc.onWarmFileThreshold)
@@ -321,6 +328,9 @@ func (cc *ContinuousCollector) handleReducing(ctx context.Context) {
 	// Release lock after reduce (before Turso push)
 	cc.warmLock.Unlock()
 
+	// Record reduce completion time
+	cc.lastReduceTime.Store(time.Now())
+
 	// Increment reduce cycle count
 	cycleCount := cc.reduceCycleCount.Add(1)
 
@@ -448,6 +458,9 @@ func (cc *ContinuousCollector) handleFreshRestart(ctx context.Context) {
 	// Reset reduce cycle count
 	cc.reduceCycleCount.Store(0)
 
+	// Reset stats for new session
+	cc.ResetStats()
+
 	// Transition back to STARTUP
 	if err := cc.stateMachine.TransitionTo(StateStartup); err != nil {
 		log.Printf("[ContinuousCollector] Failed to transition to STARTUP: %v", err)
@@ -481,11 +494,12 @@ func (cc *ContinuousCollector) initiateShutdown(ctx context.Context) {
 			defer cancel()
 
 			// Wait for state to reach PUSHING or beyond
+		waitLoop:
 			for cc.stateMachine.Current() == StateReducing {
 				select {
 				case <-shutdownCtx.Done():
 					log.Println("[ContinuousCollector] Shutdown timeout during reduce")
-					break
+					break waitLoop
 				default:
 					time.Sleep(100 * time.Millisecond)
 				}
@@ -534,4 +548,40 @@ func (cc *ContinuousCollector) IncrementWarmFileCount() {
 // onStateTransition is called on each state transition
 func (cc *ContinuousCollector) onStateTransition(from, to State) {
 	log.Printf("[ContinuousCollector] State transition: %s → %s", from, to)
+}
+
+// CollectorStats contains statistics about the collection run
+type CollectorStats struct {
+	MatchesCollected int64
+	RuntimeSeconds   int64
+	LastReduceAgo    int64 // seconds since last reduce, -1 if never reduced
+}
+
+// GetStats returns current collection statistics
+func (cc *ContinuousCollector) GetStats() CollectorStats {
+	stats := CollectorStats{
+		MatchesCollected: cc.matchesCollected.Load(),
+		RuntimeSeconds:   int64(time.Since(cc.startTime).Seconds()),
+		LastReduceAgo:    -1,
+	}
+
+	if lastReduce := cc.lastReduceTime.Load(); lastReduce != nil {
+		if t, ok := lastReduce.(time.Time); ok && !t.IsZero() {
+			stats.LastReduceAgo = int64(time.Since(t).Seconds())
+		}
+	}
+
+	return stats
+}
+
+// IncrementMatchCount adds to the total match count (called by spider)
+func (cc *ContinuousCollector) IncrementMatchCount(count int64) {
+	cc.matchesCollected.Add(count)
+}
+
+// ResetStats resets the statistics for a fresh session
+func (cc *ContinuousCollector) ResetStats() {
+	cc.matchesCollected.Store(0)
+	cc.startTime = time.Now()
+	cc.lastReduceTime.Store(time.Time{})
 }

@@ -1,9 +1,26 @@
 version: '3.8'
 
 services:
-  pipeline:
+  # Continuous collection mode (24/7)
+  continuous:
     build: .
-    container_name: lol-pipeline
+    container_name: lol-continuous
+    command: ["/app/pipeline", "--continuous"]
+    restart: unless-stopped
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - BLOB_STORAGE_PATH=/app/data
+      - TURSO_DATABASE_URL=${TURSO_DATABASE_URL}
+      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+    volumes:
+      - ./data:/app/data
+
+  # Web UI for manual pipeline control
+  ui:
+    build: .
+    container_name: lol-ui
     ports:
       - "8080:8080"
     environment:

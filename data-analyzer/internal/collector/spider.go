@@ -486,6 +486,225 @@ func (s *Spider) Stop() {
 	}
 }
 
+// RunContinuous implements SpiderRunner interface.
+// It runs a single batch of match collection and returns.
+// Call this repeatedly in a loop for continuous collection.
+func (s *Spider) RunContinuous(ctx context.Context) error {
+	// If not initialized, seed first
+	if s.startTime.IsZero() {
+		s.startTime = time.Now()
+	}
+
+	// Check if we've hit max players
+	if atomic.LoadInt64(&s.activePlayerCount) >= int64(s.maxPlayers) {
+		// Return nil - caller should wait and call again
+		return nil
+	}
+
+	// Get next player from queue
+	puuid := s.popPlayer()
+	if puuid == "" {
+		// Queue empty, caller should wait for more
+		return nil
+	}
+
+	// Check player rank - skip if below Emerald 4
+	tier, division, hasRank, err := s.client.GetSoloQueueRank(ctx, puuid)
+	if err != nil {
+		// Check if this is an API key error
+		if isHTTPError(err, 401) || isHTTPError(err, 403) {
+			return fmt.Errorf("rank check failed: %w", WrapHTTPError(getHTTPStatus(err), "API key error"))
+		}
+		log.Printf("[Spider] Failed to get rank for %s: %v (skipping)", puuid[:min(16, len(puuid))], err)
+		atomic.AddInt64(&s.playersSkippedRank, 1)
+		return nil
+	}
+	if !hasRank {
+		log.Printf("[Spider] Player %s has no solo queue rank (skipping)", puuid[:min(16, len(puuid))])
+		atomic.AddInt64(&s.playersSkippedRank, 1)
+		return nil
+	}
+	if !riot.IsEmerald4OrHigher(tier, division) {
+		log.Printf("[Spider] Player %s is %s %s - below Emerald 4 (skipping)", puuid[:min(16, len(puuid))], tier, division)
+		atomic.AddInt64(&s.playersSkippedRank, 1)
+		return nil
+	}
+
+	// Fetch match history for this player
+	matchIDs, err := s.client.GetMatchHistory(ctx, puuid, s.matchesPerPlayer)
+	if err != nil {
+		if isHTTPError(err, 401) || isHTTPError(err, 403) {
+			return fmt.Errorf("match history failed: %w", WrapHTTPError(getHTTPStatus(err), "API key error"))
+		}
+		log.Printf("[Spider] Failed to fetch match history for %s: %v", puuid[:min(16, len(puuid))], err)
+		return nil
+	}
+
+	elapsed := time.Since(s.startTime)
+	fmt.Printf("\n[Player %d/%d] [%s] Processing: %s... (%s %s, %d matches)\n",
+		atomic.LoadInt64(&s.activePlayerCount), s.maxPlayers,
+		formatDuration(elapsed), puuid[:min(16, len(puuid))], tier, division, len(matchIDs))
+
+	// Process matches synchronously in continuous mode
+	for _, matchID := range matchIDs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Check bloom filter for deduplication
+		if s.hasVisitedMatch(matchID) {
+			continue
+		}
+		s.markMatchVisited(matchID)
+
+		// Fetch and process the match
+		result := s.fetchMatch(ctx, MatchJob{MatchID: matchID, PUUID: puuid})
+		if result.Error != nil {
+			if isHTTPError(result.Error, 401) || isHTTPError(result.Error, 403) {
+				return fmt.Errorf("match fetch failed: %w", WrapHTTPError(getHTTPStatus(result.Error), "API key error"))
+			}
+			log.Printf("  [Spider] Failed to fetch %s: %v", matchID, result.Error)
+			continue
+		}
+
+		if result.Match == nil || !result.CurrentPatch {
+			continue
+		}
+
+		// Write participants to storage
+		for _, p := range result.Match.Info.Participants {
+			rawMatch := &storage.RawMatch{
+				MatchID:      result.MatchID,
+				GameVersion:  result.Match.Info.GameVersion,
+				GameDuration: result.Match.Info.GameDuration,
+				GameCreation: result.Match.Info.GameCreation,
+				PUUID:        p.PUUID,
+				GameName:     p.RiotIdGameName,
+				TagLine:      p.RiotIdTagline,
+				ChampionID:   p.ChampionID,
+				ChampionName: p.ChampionName,
+				TeamPosition: p.TeamPosition,
+				Win:          p.Win,
+				Item0:        p.Item0,
+				Item1:        p.Item1,
+				Item2:        p.Item2,
+				Item3:        p.Item3,
+				Item4:        p.Item4,
+				Item5:        p.Item5,
+				BuildOrder:   []int{},
+			}
+
+			if result.BuildOrders != nil {
+				if buildOrder, ok := result.BuildOrders[p.ParticipantID]; ok {
+					rawMatch.BuildOrder = buildOrder
+				}
+			}
+
+			if err := s.rotator.WriteLine(rawMatch); err != nil {
+				log.Printf("  [Spider] Failed to write: %v", err)
+			}
+		}
+
+		if err := s.rotator.MatchComplete(); err != nil {
+			log.Printf("  [Spider] Failed to complete match: %v", err)
+		}
+
+		atomic.AddInt64(&s.totalMatches, 1)
+
+		// Add new players to queue
+		for _, newPUUID := range result.NewPUUIDs {
+			s.addPlayer(newPUUID)
+		}
+	}
+
+	return nil
+}
+
+// Reset clears all internal state (bloom filters, player queue).
+// Implements SpiderRunner interface.
+func (s *Spider) Reset() {
+	log.Println("[Spider] Resetting internal state...")
+
+	// Clear bloom filters
+	s.matchesMu.Lock()
+	s.visitedMatches = bloom.NewWithEstimates(500000, 0.001)
+	s.matchesMu.Unlock()
+
+	s.puuidsMu.Lock()
+	s.visitedPUUIDs = bloom.NewWithEstimates(1000000, 0.001)
+	s.puuidsMu.Unlock()
+
+	// Clear player queue
+	s.playerQueueMu.Lock()
+	s.playerQueue = make([]string, 0, 1000)
+	s.playerQueueMu.Unlock()
+
+	// Reset counters
+	atomic.StoreInt64(&s.activePlayerCount, 0)
+	atomic.StoreInt64(&s.totalMatches, 0)
+	atomic.StoreInt64(&s.timelinesCollected, 0)
+	atomic.StoreInt64(&s.playersSkippedRank, 0)
+
+	// Reset start time
+	s.startTime = time.Time{}
+
+	log.Println("[Spider] Reset complete")
+}
+
+// SeedFromChallenger seeds the spider with the top Challenger player.
+// Implements SpiderRunner interface.
+func (s *Spider) SeedFromChallenger(ctx context.Context) error {
+	log.Println("[Spider] Seeding from top Challenger player...")
+
+	puuid, err := s.client.GetTopChallengerPUUID(ctx)
+	if err != nil {
+		if isHTTPError(err, 401) || isHTTPError(err, 403) {
+			return fmt.Errorf("seed from challenger failed: %w", WrapHTTPError(getHTTPStatus(err), "API key error"))
+		}
+		return fmt.Errorf("failed to get top Challenger: %w", err)
+	}
+
+	s.addPlayer(puuid)
+	log.Printf("[Spider] Seeded with Challenger player: %s...", puuid[:min(16, len(puuid))])
+
+	return nil
+}
+
+// isHTTPError checks if an error contains a specific HTTP status code
+func isHTTPError(err error, statusCode int) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	statusStr := fmt.Sprintf("%d", statusCode)
+	return contains(errStr, statusStr)
+}
+
+// getHTTPStatus extracts HTTP status code from error (best effort)
+func getHTTPStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	errStr := err.Error()
+	if contains(errStr, "401") {
+		return 401
+	}
+	if contains(errStr, "403") {
+		return 403
+	}
+	return 0
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (s *Spider) printSummary() {
 	elapsed := time.Since(s.startTime)
 	totalMatches := atomic.LoadInt64(&s.totalMatches)

@@ -21,6 +21,7 @@ RUN go test ./... -run "^Test[^_]*$" -v
 RUN go build -o /bin/ui ./cmd/ui
 RUN go build -o /bin/collector ./cmd/collector
 RUN go build -o /bin/reducer ./cmd/reducer
+RUN go build -o /bin/pipeline ./cmd/pipeline
 
 # Runtime stage
 FROM golang:1.24-alpine
@@ -34,6 +35,7 @@ RUN apk add --no-cache github-cli
 COPY --from=builder /bin/ui /app/ui
 COPY --from=builder /bin/collector /app/collector
 COPY --from=builder /bin/reducer /app/reducer
+COPY --from=builder /bin/pipeline /app/pipeline
 
 # Copy source (needed for 'go run' in pipeline)
 COPY --from=builder /build /app
