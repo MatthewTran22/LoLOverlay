@@ -21,6 +21,8 @@ type SpiderRunner interface {
 	Reset()
 	// SeedFromChallenger seeds the spider with the top Challenger player
 	SeedFromChallenger(ctx context.Context) error
+	// SetAPIKey updates the API key used by the spider's riot client
+	SetAPIKey(key string)
 }
 
 // API Key error types
@@ -196,6 +198,19 @@ func (cc *ContinuousCollector) Run(ctx context.Context) error {
 		default:
 			// Handle current state
 			switch cc.stateMachine.Current() {
+			case StateStartup:
+				// If we're stuck in startup (e.g., after failed fresh restart), retry seeding
+				log.Println("[ContinuousCollector] In STARTUP state, attempting to seed and start...")
+				if err := cc.seedAndStartCollecting(ctx); err != nil {
+					log.Printf("[ContinuousCollector] Seeding failed: %v", err)
+					if IsAPIKeyError(err) {
+						cc.keyExpired.Store(true)
+						cc.stateMachine.TransitionTo(StateWaitingForKey)
+					} else {
+						time.Sleep(30 * time.Second) // Retry after delay
+					}
+				}
+
 			case StateCollecting:
 				// Spider is running, just wait
 				time.Sleep(100 * time.Millisecond)
@@ -429,8 +444,14 @@ func (cc *ContinuousCollector) handleWaitingForKey(ctx context.Context) {
 				}
 			}
 
-			// Key is valid, transition to FRESH_RESTART
-			log.Println("[ContinuousCollector] Valid key received, initiating fresh restart...")
+			// Key is valid - update the spider's API key
+			log.Println("[ContinuousCollector] Valid key received, updating API key...")
+			if cc.spider != nil {
+				cc.spider.SetAPIKey(newKey)
+			}
+
+			// Transition to FRESH_RESTART
+			log.Println("[ContinuousCollector] Initiating fresh restart...")
 			if err := cc.stateMachine.TransitionTo(StateFreshRestart); err != nil {
 				log.Printf("[ContinuousCollector] Failed to transition to FRESH_RESTART: %v", err)
 				continue
@@ -470,6 +491,25 @@ func (cc *ContinuousCollector) handleFreshRestart(ctx context.Context) {
 	// Seed and start collecting again
 	if err := cc.seedAndStartCollecting(ctx); err != nil {
 		log.Printf("[ContinuousCollector] Failed to restart collection: %v", err)
+
+		// If seeding failed with a key error, go back to waiting for key
+		if IsAPIKeyError(err) {
+			log.Println("[ContinuousCollector] API key error during restart, returning to wait for key...")
+			cc.keyExpired.Store(true)
+			if transErr := cc.stateMachine.TransitionTo(StateWaitingForKey); transErr != nil {
+				log.Printf("[ContinuousCollector] Failed to transition to WAITING_FOR_KEY: %v", transErr)
+			}
+			// Notify about the failure
+			if cc.notifyFunc != nil {
+				cc.notifyFunc(ctx, "Fresh restart failed - API key may still be invalid. Please send a new key.")
+			}
+			return
+		}
+
+		// For other errors, retry after a delay
+		log.Println("[ContinuousCollector] Will retry seeding in 30 seconds...")
+		time.Sleep(30 * time.Second)
+		return
 	}
 
 	// Send success notification

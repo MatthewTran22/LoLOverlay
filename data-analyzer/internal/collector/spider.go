@@ -656,6 +656,12 @@ func (s *Spider) ResetPlayerCount() {
 	log.Printf("[Spider] Reset player count (was %d, now 0) - continuing from queue", prevCount)
 }
 
+// SetAPIKey updates the API key used by the spider's riot client.
+// Implements SpiderRunner interface.
+func (s *Spider) SetAPIKey(key string) {
+	s.client.SetAPIKey(key)
+}
+
 // SeedFromChallenger seeds the spider with the top Challenger player.
 // Implements SpiderRunner interface.
 func (s *Spider) SeedFromChallenger(ctx context.Context) error {

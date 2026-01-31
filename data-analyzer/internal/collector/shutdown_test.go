@@ -393,6 +393,10 @@ func (m *mockSpiderForTest) SeedFromChallenger(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockSpiderForTest) SetAPIKey(key string) {
+	// No-op for testing
+}
+
 // mockKeyValidatorForTest is a test helper
 type mockKeyValidatorForTest struct {
 	valid bool

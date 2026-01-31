@@ -7,6 +7,14 @@ services:
     container_name: lol-continuous
     command: ["/app/pipeline", "--continuous"]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.05'
     environment:
       - RIOT_API_KEY=${RIOT_API_KEY}
       - BLOB_STORAGE_PATH=/app/data
@@ -29,6 +37,11 @@ services:
     command: ["/app/pipeline", "--continuous"]
     restart: "no"
     profiles: ["tools"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
     environment:
       - RIOT_API_KEY=${RIOT_API_KEY}
       - BLOB_STORAGE_PATH=/app/data
@@ -49,27 +62,15 @@ services:
     container_name: lol-reducer
     command: ["/app/reducer"]
     profiles: ["tools"]  # Won't start with `docker-compose up`
+    deploy:
+      resources:
+        limits:
+          memory: 512M   # Higher limit for aggregation
+          cpus: '0.50'
     environment:
       - BLOB_STORAGE_PATH=/app/data
       - TURSO_DATABASE_URL=${TURSO_DATABASE_URL}
       - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}
-    volumes:
-      - ./data:/app/data
-      - ./export:/app/export
-
-  # Web UI for manual pipeline control
-  ui:
-    build: .
-    container_name: lol-ui
-    ports:
-      - "8080:8080"
-    environment:
-      - RIOT_API_KEY=${RIOT_API_KEY}
-      - BLOB_STORAGE_PATH=/app/data
-      - TURSO_DATABASE_URL=${TURSO_DATABASE_URL}
-      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - GITHUB_REPO=${GITHUB_REPO:-MatthewTran22/LoLOverlay-Data}
     volumes:
       - ./data:/app/data
       - ./export:/app/export

@@ -56,6 +56,16 @@ func NewClient() (*Client, error) {
 	}, nil
 }
 
+// SetAPIKey updates the API key used for requests
+func (c *Client) SetAPIKey(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.apiKey = key
+	if len(key) > 10 {
+		fmt.Printf("Updated API key: %s...%s\n", key[:8], key[len(key)-4:])
+	}
+}
+
 // rateLimit implements a sliding window rate limiter
 func (c *Client) rateLimit() {
 	c.mu.Lock()
